@@ -33,11 +33,14 @@ impl Verb {
     }
 }
 
-/// `pw generate` and `pw lock`, offered above any items that match the word.
+/// `pw generate`, `pw lock` and `pw aliases`, offered above any items that match the
+/// word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Special {
     Generate,
     Lock,
+    /// Opens Passwords' Email aliases page.
+    Aliases,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +62,7 @@ pub fn parse(text: &str) -> Option<Query> {
     let special = match words.as_slice() {
         [w] if w.eq_ignore_ascii_case("generate") => Some(Special::Generate),
         [w] if w.eq_ignore_ascii_case("lock") => Some(Special::Lock),
+        [w] if w.eq_ignore_ascii_case("aliases") || w.eq_ignore_ascii_case("alias") => Some(Special::Aliases),
         _ => None,
     };
     // A trailing verb counts only after other words: `pw pass` searches for "pass".
@@ -118,5 +122,8 @@ mod tests {
         assert_eq!(parse("pw Lock"), q("Lock", Verb::Username, Some(Special::Lock)));
         assert_eq!(parse("pw lock screen"), q("lock screen", Verb::Username, None));
         assert_eq!(parse("pw generate pass"), q("generate", Verb::Password, None));
+        assert_eq!(parse("pw aliases"), q("aliases", Verb::Username, Some(Special::Aliases)));
+        assert_eq!(parse("pw alias"), q("alias", Verb::Username, Some(Special::Aliases)));
+        assert_eq!(parse("pw alias github"), q("alias github", Verb::Username, None));
     }
 }

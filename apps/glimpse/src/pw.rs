@@ -18,6 +18,8 @@ pub enum Pw {
     },
     Generate,
     Lock,
+    /// Enter opens Passwords' Email aliases page.
+    Aliases,
     /// The vault is locked: Enter opens Passwords on its unlock page.
     Unlock,
     /// No account yet: Enter opens Passwords to sign in.
@@ -44,6 +46,7 @@ impl Pw {
                 _ => "dialog-password-symbolic",
             },
             Pw::Generate => "media-playlist-shuffle-symbolic",
+            Pw::Aliases => "mail-send-symbolic",
             Pw::Lock | Pw::Unlock => "system-lock-screen-symbolic",
             Pw::SignIn => "dialog-password-symbolic",
             Pw::Unavailable => "dialog-warning-symbolic",
@@ -68,6 +71,7 @@ impl Pw {
             }
             Pw::Generate => vec![(&["Enter"][..], "Generate and copy")],
             Pw::Lock => vec![(&["Enter"][..], "Lock")],
+            Pw::Aliases => vec![(&["Enter"][..], "Open in Passwords")],
             Pw::Unlock => vec![(&["Enter"][..], "Unlock in Passwords")],
             Pw::SignIn => vec![(&["Enter"][..], "Open Passwords")],
             Pw::Unavailable | Pw::Help => vec![],
@@ -141,6 +145,11 @@ pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
             Pw::Generate,
         )),
         Some(Special::Lock) => rows.push(("Lock the vault".to_string(), String::new(), Pw::Lock)),
+        Some(Special::Aliases) => rows.push((
+            "Email aliases".to_string(),
+            "See your aliases and the logins that use them, in Passwords".to_string(),
+            Pw::Aliases,
+        )),
         None => {}
     }
     match client::search(&q.terms, 10).await {
@@ -159,7 +168,7 @@ pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
     }
     if rows.is_empty() {
         let help = if q.terms.is_empty() {
-            ("Type a name after pw".to_string(), "pw github · pw github pass · pw generate · pw lock".to_string())
+            ("Type a name after pw".to_string(), "pw github · pw github pass · pw generate · pw aliases · pw lock".to_string())
         } else {
             (format!("Nothing in the vault matches “{}”", q.terms), "Try fewer or other words".to_string())
         };
@@ -193,6 +202,11 @@ pub fn activate(pw: &Pw, verb: Option<Verb>, window: &gtk::ApplicationWindow, st
             }
             Pw::Generate => client::call("Generate", None).await.map(|_| ()).map_err(message),
             Pw::Lock => client::call("Lock", None).await.map(|_| ()).map_err(message),
+            Pw::Aliases => std::process::Command::new("nyx-passwords")
+                .args(["--section", "aliases"])
+                .spawn()
+                .map(|_| ())
+                .map_err(|_| "Couldn't open Passwords".to_string()),
             Pw::Unlock | Pw::SignIn => std::process::Command::new("nyx-passwords")
                 .arg("--unlock")
                 .spawn()

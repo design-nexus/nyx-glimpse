@@ -68,6 +68,7 @@ searches your vault and nothing else: no apps, files, plugins or local AI see it
 | `pw github pass` / `otp` / `open` | The same, with Enter copying the password, the one-time code, or opening the site |
 | `pw generate` | A new password, copied |
 | `pw lock` | Locks the vault |
+| `pw aliases` | Opens Passwords' Email aliases page |
 
 Enter copies the username; Ctrl+Enter the password; Alt+Enter the one-time code;
 Ctrl+O opens the site. Passwords are never shown in Glimpse, and the copy is cleared
