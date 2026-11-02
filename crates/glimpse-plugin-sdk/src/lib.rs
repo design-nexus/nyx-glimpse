@@ -126,3 +126,12 @@ pub enum Setting {
     Choice { key: String, title: String, value: String, options: Vec<(String, String)> },
     Slider { key: String, title: String, value: f64, min: f64, max: f64, step: f64 },
 }
+
+/// Optional v1 contextual_actions response. Existing Hit payloads stay unchanged.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextAction {
+    pub id: String,
+    pub title: String,
+    pub action: Action,
+}

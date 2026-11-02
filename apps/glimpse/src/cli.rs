@@ -15,7 +15,7 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
     };
     match op {
         "--help" | "-h" => println!(
-            "Glimpse — local universal search\n\n nyx-glimpse [--toggle] [--add-folder] [--plugins]\n nyx-glimpse sources add|remove|exclude|code PATH\n nyx-glimpse index scan|status|pause|resume|purge\n nyx-glimpse models status|setup|download [--text-only]\n nyx-glimpse plugins list|catalog [--refresh]|install ID\n nyx-glimpse plugins link-local DIR (development)\n nyx-glimpse plugins install-local DIR | install-git URL COMMIT [FOLDER]\n nyx-glimpse plugins enable ID --approve-permissions\n nyx-glimpse plugins disable|remove|update|rollback ID [--purge]\n nyx-glimpse plugins update-from DIR\n nyx-glimpse integration window|enable|disable|restore\n nyx-glimpse service enable|disable\n nyx-glimpse search QUERY\n nyx-glimpse diagnostics"
+            "Glimpse — local universal search\n\n nyx-glimpse [--toggle] [--add-folder] [--plugins]\n nyx-glimpse sources add|remove|exclude|code PATH\n nyx-glimpse index scan|status|pause|resume|purge\n nyx-glimpse models status|setup|download [--text-only]\n nyx-glimpse plugins list|catalog [--refresh]|install ID\n nyx-glimpse plugins link-local DIR (development)\n nyx-glimpse plugins install-local DIR | install-git URL COMMIT [FOLDER]\n nyx-glimpse plugins enable ID --approve-permissions\n nyx-glimpse plugins disable|remove|update|rollback ID [--purge]\n nyx-glimpse plugins update-from DIR\n nyx-glimpse integration window|enable|disable|restore\n nyx-glimpse service enable|disable\n nyx-glimpse search QUERY\n nyx-glimpse diagnostics\n nyx-glimpse favorite RESULT_ID\n nyx-glimpse alias RESULT_ID [ALIAS]\n nyx-glimpse history list|clear\n nyx-glimpse omarchy-actions\n nyx-glimpse benchmark-search"
         ),
         "sources" => {
             let cmd = arg(a, 1)?;
@@ -146,6 +146,30 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
         "search" => {
             let q = a[1..].join(" ");
             println!("{}", serde_json::to_string(&index::search(&p, &p.load()?, &q, 40)?)?);
+        }
+        "benchmark-search" => println!("{}", crate::metrics::benchmark()),
+        "history" => match arg(a, 1)? {
+            "clear" => crate::learning::clear(&p)?,
+            "list" => println!("{}", serde_json::to_string(&crate::learning::history(&p)?)?),
+            _ => bail!("Use history list|clear"),
+        },
+        "alias" => crate::learning::alias(&p, arg(a, 1)?, a.get(2).map(String::as_str).unwrap_or(""))?,
+        "favorite" => crate::learning::favorite(&p, arg(a, 1)?)?,
+        "omarchy-actions" => {
+            let mut source = crate::omarchy::Omarchy::default();
+            source.refresh(true, &|| false)?;
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &source
+                        .entries
+                        .iter()
+                        .map(
+                            |e| json!({"id":e.id,"title":e.title,"detail":e.detail,"direct":e.argv.is_some(),"current":e.current})
+                        )
+                        .collect::<Vec<_>>()
+                )?
+            );
         }
         "diagnostics" => println!(
             "{}",

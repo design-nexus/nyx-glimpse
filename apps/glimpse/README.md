@@ -21,7 +21,11 @@ menu and terminal input-mode actions. Both shortcuts can be changed in Settings.
 The panel opens with only a focused search field and hides when focus moves outside it. Typing reveals results grouped by category, with applications first. Calculations and conversions show only utility results: `2+2` or `2+2=` becomes `2 + 2 = 4`, with an interactive calculator preview. `1 oz to lb` shows the requested result followed by kilograms and grams. Clearing the query collapses the panel again. Plugin windows have a Close button and support Escape.
 
 Use arrows to select, Enter to activate, Ctrl+Enter to reveal a file’s folder, and
-Escape to close. Utility results copy to the clipboard. Reboot and shutdown require
+Escape to close. Ctrl+K opens searchable actions for the selected result; Escape
+returns to the same query and selection. Ctrl+Shift+F toggles a favorite. Both
+shortcuts can be changed in Settings. Up on an empty search opens saved query history.
+Use Set alias in the action panel to assign or remove an alias. Applications expose
+New Window or Settings when supported by their desktop entries. Utility results copy to the clipboard. Reboot and shutdown require
 another activation. The panel’s folder button selects sources; indexing then starts
 at login through a user service.
 
@@ -95,7 +99,10 @@ never runs plugin setup scripts. See [PLUGIN_API.md](PLUGIN_API.md) and examples
 Preferences: `$XDG_CONFIG_HOME/nyx-glimpse/settings.toml`.
 Indexes, models, plugins: `$XDG_DATA_HOME/nyx-glimpse`.
 Private operational state: `$XDG_STATE_HOME/nyx-glimpse`.
-The standard XDG fallbacks apply. There is no stored search history or telemetry.
+The standard XDG fallbacks apply. Learning is enabled by default and stores accepted search selections locally for up to 90 days.
+Vault queries and utility expressions are never retained. Disable learning or clear its
+data in Settings → Desktop → Glimpse. Favorites and explicit aliases are kept separately.
+There is no telemetry.
 Enabled network plugins can receive queries; their permission is visible before enablement.
 
 ```sh
@@ -133,13 +140,17 @@ Glimpse’s Settings page uses native folding sections. The page has five sectio
 controls visible; Sources summarizes folder/exclusion counts, with each folder’s options
 inside its disclosure row. Section and folder expansion state survive polling.
 
-Normal search requires all terms and matches numeric terms exactly (`2` does not match
+Normal search supports word abbreviations and bounded typo correction, including
+transposed letters. All terms must match; quoted phrases stay literal. Favorites
+and decayed usage rank comparable matches without promoting unrelated results.
+Exact names outrank learned terms, and applications remain the first category.
+Normal search matches numeric terms exactly (`2` does not match
 `2026`). Application names rank ahead of description matches. Descriptive queries can
 also show up to five conservative semantic suggestions under Related results; use
 `semantic:` or `code:` to request semantic retrieval explicitly. Math is recognized
 through operators, parentheses, or an initial `=`; a bare number remains a search.
 Unit conversion accepts attached quantities and common unit names. `oz` means mass;
-`fl oz` means US fluid ounces. The launcher is 640 pixels wide.
+`fl oz` means US fluid ounces. The launcher is 760 pixels wide.
 
 Local AI exposes one enable toggle and a setup status. Its approximately 865 MB package
 contains a text embedding model and its companion media encoder; these are managed as
@@ -151,3 +162,35 @@ the selector while retaining its selected value. Theme preferences remain shared
 Nyx apps. Changing status values updates labels in place without rebuilding Settings.
 Advanced device, indexing-limit, manual-rate, diagnostic, and maintenance operations
 remain available through CLI/configuration rather than occupying the main Settings page.
+
+
+## Omarchy and contextual actions
+
+Glimpse reads the installed Omarchy command metadata and menu definitions, including
+user menu overrides. Supported actions run through existing Omarchy commands;
+unsupported shell expressions and state conditions open the stock menu. Fonts,
+kernels, and power profiles are discovered dynamically where their interfaces are
+available. Counts depend on the installation. `service NAME` shows matching user
+services and their status without starting or stopping them.
+
+Passwords is a built-in provider, separate from plugins. Its action panel reuses
+Passwords' authenticated copying and site opening; no vault content enters the
+ordinary index, history, aliases, or third-party providers. Pin to Dock, Backup,
+and opening a specific vault entry require public contracts not currently present.
+
+```sh
+nyx-glimpse favorite app:org.mozilla.firefox.desktop  # toggle
+nyx-glimpse alias app:org.mozilla.firefox.desktop browser
+nyx-glimpse alias app:org.mozilla.firefox.desktop     # remove
+nyx-glimpse history list
+nyx-glimpse history clear                           # keeps aliases/favorites
+nyx-glimpse omarchy-actions                         # installed metadata, no execution
+nyx-glimpse benchmark-search                        # synthetic; no models or downloads
+```
+
+The panel shortcut configuration uses GTK accelerator spelling, such as
+`action_key = "<Control>k"` and `favorite_key = "<Control><Shift>f"`.
+Reserved navigation, copying, Passwords, and playback keys cannot be replaced.
+
+See the repository [audit](../../docs/GLIMPSE_AUDIT.md),
+[architecture](../../docs/PROVIDERS.md), and [measurements](../../docs/PERFORMANCE.md).

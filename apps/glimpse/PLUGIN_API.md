@@ -89,3 +89,35 @@ so its permissions can be reviewed again.
 Catalog entries contain ID/name/description, repository, immutable commit hash, and
 optional subfolder. The built-in catalog works offline; remote refreshes and updates
 are user actions. Catalog entries can be added without changing the runtime API.
+
+
+## Optional contextual actions (API v1)
+
+Add `contextual_actions` to the manifest and handshake capabilities to offer
+additional actions in Ctrl+K. It requires renewed explicit permission approval,
+including updates that keep the same network/filesystem permissions. Existing v1
+Hit payloads and default activation are unchanged. Older hosts reject the new
+capability rather than silently granting it.
+
+The host sends `op: "actions"` with `args: {"result_id":"stable-hit-id"}`. Return at
+most 32 actions with unique IDs (letters, digits, hyphen, underscore; at most 80
+characters), nonempty titles (at most 200 bytes), and an existing Action:
+
+```json
+[{"id":"copy-detail","title":"Copy details","action":{"kind":"activate","token":"opaque-token"}}]
+```
+
+When selected, the host re-enumerates the result's actions under current grants.
+For an `activate` action it sends `op: "activate"` with `token`, `result_id`, and
+`action_id`. Return a concrete Copy, Open, or Url action. Recursive Activate
+responses are rejected. Direct concrete actions are also permitted in the list.
+
+Both requests use the existing bubblewrap runtime, two-second limit, bounded
+output, source/network grants, and revocation checks. Returned paths/URLs are
+validated again before host dispatch. There is no arbitrary host-command action,
+Node runtime, or access to the built-in Passwords provider.
+
+Explicit plugin aliases retain the original discovery query, not a cached action
+token. The host searches that plugin again and requires the same stable result ID;
+removed or revoked results cannot execute through an alias. Set aliases through
+the action panel so their discovery query is available.

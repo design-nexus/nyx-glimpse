@@ -3,6 +3,7 @@ mod pw;
 mod ui;
 use gtk::{gio, glib, prelude::*};
 fn main() -> glib::ExitCode {
+    nyx_glimpse::metrics::start();
     unsafe {
         libc::umask(0o077);
     }

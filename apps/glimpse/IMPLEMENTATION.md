@@ -85,3 +85,14 @@ controls; shortcuts, limits, and currency settings have their own folded section
 Focused checks passed for intent classification, math, conversion aliases and related
 units, exact numeric/multiword/phrase matching, both Settings schemas, literal FTS input,
 and Settings protocol compatibility. Desktop checks covered the 640-pixel math view, exclusive conversion results with related mass units, keypad calculation, Copy, continued typing after keypad use, and opening/closing compact folder disclosures. Both updated apps were installed. Additional testing was stopped at the user’s request.
+
+
+## Search, actions, and Omarchy — November 2026
+
+The current implementation adds bounded fuzzy/typo matching, local learning with
+privacy controls, favorites/aliases, configurable panel shortcuts, contextual actions,
+a native provider contract, installed Omarchy discovery, and optional plugin actions.
+See the repository's docs/GLIMPSE_AUDIT.md, docs/PROVIDERS.md, and docs/PERFORMANCE.md
+for source provenance, verification, measurements, and deferred contracts. Earlier
+latency, model, and layout evidence above belongs to earlier revisions; it is not
+new verification for this change. The current panel width follows the source (760 px).

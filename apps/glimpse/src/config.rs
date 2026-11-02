@@ -24,6 +24,12 @@ pub struct Config {
     pub search_key: String,
     pub menu_key: String,
     pub preview: bool,
+    pub learning: bool,
+    pub favorites: Vec<String>,
+    pub aliases: BTreeMap<String, String>,
+    pub alias_queries: BTreeMap<String, String>,
+    pub action_key: String,
+    pub favorite_key: String,
     pub mode: String,
     pub theme: String,
     pub rates_date: String,
@@ -45,6 +51,12 @@ impl Default for Config {
             search_key: "SUPER + SPACE".into(),
             menu_key: "CTRL + SPACE".into(),
             preview: true,
+            learning: true,
+            favorites: vec![],
+            aliases: BTreeMap::new(),
+            alias_queries: BTreeMap::new(),
+            action_key: "<Control>k".into(),
+            favorite_key: "<Control><Shift>f".into(),
             mode: "omarchy".into(),
             theme: "tokyo-night".into(),
             rates_date: String::new(),
@@ -127,6 +139,31 @@ pub fn atomic_write(p: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 pub fn validate(c: &Config) -> Result<()> {
+    let mut used = Vec::new();
+    for key in [&c.action_key, &c.favorite_key] {
+        let parsed = panel_shortcut(key)?;
+        if used.contains(&parsed)
+            || ["<Control>p", "<Control>c", "<Control>o"].iter().any(|s| panel_shortcut(s).ok().as_ref() == Some(&parsed))
+        {
+            bail!("Panel shortcut conflicts with an existing action");
+        }
+        used.push(parsed);
+    }
+    if c.alias_queries.len() > 1000
+        || c.alias_queries
+            .iter()
+            .any(|(id, q)| !crate::learning::eligible_id(id) || q.len() > 256 || crate::passwords::parse(q).is_some())
+    {
+        bail!("Invalid alias queries");
+    }
+    if c.favorites.len() > 1000
+        || c.aliases.len() > 1000
+        || c.aliases.values().any(|a| a.trim().is_empty() || a.len() > 128 || crate::passwords::parse(a).is_some())
+        || c.aliases.keys().chain(c.favorites.iter()).any(|id| !crate::learning::eligible_id(id))
+    {
+        bail!("Invalid favorites or aliases");
+    }
+
     for key in [&c.search_key, &c.menu_key] {
         validate_key(key)?;
     }
@@ -245,4 +282,31 @@ pub fn validate_key(key: &str) -> Result<()> {
         bail!("unsupported shortcut key");
     }
     Ok(())
+}
+
+/// Parse panel accelerators without initializing GTK: settings and indexing are headless.
+pub fn panel_shortcut(value: &str) -> Result<(String, u8)> {
+    let mut rest = value;
+    let mut modifiers = 0u8;
+    while let Some(tail) = rest.strip_prefix('<') {
+        let (modifier, tail) = tail.split_once('>').context("Unclosed shortcut modifier")?;
+        let bit = match modifier.to_ascii_lowercase().as_str() {
+            "control" | "ctrl" | "primary" => 1,
+            "alt" => 2,
+            "shift" => 4,
+            _ => bail!("Unsupported shortcut modifier"),
+        };
+        if modifiers & bit != 0 {
+            bail!("Duplicate shortcut modifier");
+        }
+        modifiers |= bit;
+        rest = tail;
+    }
+    let key = rest.to_ascii_lowercase();
+    let valid = key.len() == 1 && key.bytes().all(|b| b.is_ascii_alphanumeric())
+        || key.strip_prefix('f').and_then(|s| s.parse::<u8>().ok()).is_some_and(|n| (1..=12).contains(&n));
+    if modifiers & 3 == 0 || !valid {
+        bail!("Use Control or Alt with a letter, number, or F1–F12");
+    }
+    Ok((key, modifiers))
 }

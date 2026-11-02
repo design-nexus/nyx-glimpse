@@ -15,3 +15,8 @@ pub mod query;
 
 pub mod ai_setup;
 pub mod currency;
+
+pub mod learning;
+pub mod metrics;
+pub mod omarchy;
+pub mod providers;

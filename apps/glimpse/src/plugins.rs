@@ -19,6 +19,8 @@ pub use glimpse_plugin_sdk::{API_VERSION, Action, Hit, Manifest, Permissions};
 #[serde(default)]
 pub struct Grant {
     pub requested: Permissions,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub enabled: bool,
     pub permissions: Permissions,
     pub version: String,
@@ -98,7 +100,10 @@ pub fn load(dir: &Path) -> Result<Manifest> {
     {
         bail!("invalid manifest or unsupported plugin API");
     }
-    if m.capabilities.iter().any(|s| !["search", "commands", "preview", "reader", "settings"].contains(&s.as_str())) {
+    if m.capabilities
+        .iter()
+        .any(|s| !["search", "commands", "preview", "reader", "settings", "contextual_actions"].contains(&s.as_str()))
+    {
         bail!("unsupported capability");
     }
     for p in &m.permissions.read {
@@ -197,7 +202,10 @@ pub fn install_local(p: &Paths, source: &Path, origin: &str, revision: &str, upd
         let _ = load(&stage)?;
         let mut reg = registry(p)?;
         let old = reg.get(&m.id).cloned().unwrap_or_default();
-        let enabled = old.enabled && old.requested == m.permissions;
+        let enabled = old.enabled
+            && old.requested == m.permissions
+            && (!m.capabilities.iter().any(|c| c == "contextual_actions")
+                || old.capabilities.iter().any(|c| c == "contextual_actions"));
         let rollback = base.join(format!(".rollback-{}", m.id));
         if rollback.exists() {
             fs::remove_dir_all(&rollback)?;
@@ -220,6 +228,7 @@ pub fn install_local(p: &Paths, source: &Path, origin: &str, revision: &str, upd
                 enabled,
                 permissions: if enabled { old.permissions.clone() } else { Permissions::default() },
                 requested: m.permissions.clone(),
+                capabilities: m.capabilities.clone(),
                 version: m.version.clone(),
                 source: origin.into(),
                 revision: revision.into(),
@@ -293,6 +302,7 @@ pub fn enable(p: &Paths, id: &str, approve: bool) -> Result<()> {
     if grant.permissions.selected_sources {
         grant.permissions.read.extend(c.roots.clone());
     }
+    grant.capabilities = plugin.manifest.capabilities.clone();
     grant.version = plugin.manifest.version;
     save_registry(p, &reg)
 }
@@ -400,12 +410,16 @@ fn bind_capture_library(cmd: &mut Command, plugin_id: &str, dir: &Path) -> Optio
     Some("/capture-library/capture.sqlite")
 }
 
+pub fn authorized(plugin: &Plugin) -> bool {
+    plugin.grant.enabled
+        && plugin.grant.version == plugin.manifest.version
+        && plugin.grant.requested == plugin.manifest.permissions
+        && (!plugin.manifest.capabilities.iter().any(|c| c == "contextual_actions")
+            || plugin.grant.capabilities.iter().any(|c| c == "contextual_actions"))
+}
 fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Command> {
     let cfg = p.load()?;
-    if !plugin.grant.enabled
-        || plugin.grant.version != plugin.manifest.version
-        || plugin.grant.requested != plugin.manifest.permissions
-    {
+    if !authorized(plugin) {
         bail!("plugin is disabled or permissions changed");
     }
     let storage = p.data.join("plugin-storage").join(&plugin.manifest.id);
@@ -459,8 +473,13 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
     // News and Capture keep libraries under ~/.local, which selected sources cannot name.
     // Mount that one folder, not the rest of the hidden path.
     let news_db = bind_news_library(&mut cmd, &plugin.manifest.id, &news_library_dir());
-    let notes_dir=xdg_data_home().join("nyx-notes/glimpse");
-    let notes_db=if plugin.manifest.id=="nyx-notes"&&notes_dir.is_dir(){cmd.arg("--ro-bind").arg(&notes_dir).arg("/notes-library");Some("/notes-library/launcher.sqlite")}else{None};
+    let notes_dir = xdg_data_home().join("nyx-notes/glimpse");
+    let notes_db = if plugin.manifest.id == "nyx-notes" && notes_dir.is_dir() {
+        cmd.arg("--ro-bind").arg(&notes_dir).arg("/notes-library");
+        Some("/notes-library/launcher.sqlite")
+    } else {
+        None
+    };
     let capture_db = bind_capture_library(&mut cmd, &plugin.manifest.id, &capture_library_dir());
     // Mail, Calendar and Reminders: one database file each, nothing else of theirs.
     let pim_db = crate::pim::bind(&mut cmd, &plugin.manifest.id, &xdg_data_home());
@@ -487,7 +506,9 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
     if let Some(db) = capture_db {
         cmd.args(["--setenv", "NYX_CAPTURE_DB", db]);
     }
-    if let Some(db)=notes_db{cmd.args(["--setenv","NYX_NOTES_INDEX",db]);}
+    if let Some(db) = notes_db {
+        cmd.args(["--setenv", "NYX_NOTES_INDEX", db]);
+    }
     cmd.arg("--");
     let executable = &plugin.manifest.exec[0];
     let exe = if executable.contains('/') {
@@ -552,6 +573,12 @@ pub fn call(p: &Paths, id: &str, capability: &str, op: &str, args: Value) -> Res
 }
 pub fn call_cancel(p: &Paths, id: &str, capability: &str, op: &str, args: Value, cancelled: impl Fn() -> bool) -> Result<Value> {
     let plugin = get(p, id)?;
+    if plugin.manifest.capabilities.iter().any(|c| c == "contextual_actions")
+        && !plugin.grant.capabilities.iter().any(|c| c == "contextual_actions")
+    {
+        bail!("Contextual actions require renewed permission approval");
+    }
+
     if !plugin.manifest.capabilities.iter().any(|s| s == capability) {
         bail!("capability not advertised");
     }
@@ -564,8 +591,11 @@ pub fn call_cancel(p: &Paths, id: &str, capability: &str, op: &str, args: Value,
     );
 
     let revoked = process::throttled(Duration::from_millis(250), || {
-        get(p, id).is_ok_and(|now| {
-            !now.grant.enabled || now.grant.version != plugin.grant.version || now.grant.permissions != plugin.grant.permissions
+        get(p, id).map_or(true, |now| {
+            !authorized(&now)
+                || now.grant.version != plugin.grant.version
+                || now.grant.permissions != plugin.grant.permissions
+                || now.manifest.capabilities != plugin.manifest.capabilities
         })
     });
     let out = process::capture_cancel(
@@ -585,6 +615,8 @@ pub fn call_cancel(p: &Paths, id: &str, capability: &str, op: &str, args: Value,
     if !current.grant.enabled
         || current.grant.version != plugin.grant.version
         || current.grant.permissions != plugin.grant.permissions
+        || current.grant.capabilities != plugin.grant.capabilities
+        || current.manifest.capabilities != plugin.manifest.capabilities
     {
         bail!("plugin changed while running");
     }
@@ -786,17 +818,86 @@ pub fn link_local(p: &Paths, source: &Path) -> Result<String> {
 // only the installed Notes executable with one validated JSON argument, never a shell.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NotesHostRequest {api_version:u32,op:String,vault:PathBuf,#[serde(default)]path:Option<PathBuf>,#[serde(default)]title:Option<String>,#[serde(default)]offset:Option<u64>,#[serde(default)]append:bool}
-fn notes_host_args(token:&str)->Result<Vec<String>>{
-    if token.len()>4096{bail!("Notes action exceeds limit");}let request:NotesHostRequest=serde_json::from_str(token)?;
-    if request.api_version!=1||!request.vault.is_absolute()||request.vault.components().any(|c|c==std::path::Component::ParentDir){bail!("Invalid Notes vault");}
-    match request.op.as_str(){"create"=>{let title=request.title.context("Missing note title")?;if title.is_empty()||title.len()>240||title.starts_with('.')||title.contains(['/','\\','\0','\n','\r']){bail!("Invalid note title");}},"open"=>{let path=request.path.context("Missing note path")?;if !path.starts_with(&request.vault)||path.components().any(|c|c==std::path::Component::ParentDir||c.as_os_str()==".obsidian"){bail!("Note must remain inside its vault");}},_=>bail!("Unsupported Notes operation")};
-    let _=(request.offset,request.append);Ok(vec!["--launcher-action".into(),token.into()])
+struct NotesHostRequest {
+    api_version: u32,
+    op: String,
+    vault: PathBuf,
+    #[serde(default)]
+    path: Option<PathBuf>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    offset: Option<u64>,
+    #[serde(default)]
+    append: bool,
 }
-pub fn notes_host_action(paths:&Paths,id:&str,token:&str)->Option<Result<()>>{
-    if id!="nyx-notes"{return None;}Some((||{let plugin=get(paths,id)?;if !plugin.grant.enabled||plugin.grant.version!=plugin.manifest.version||plugin.grant.requested!=plugin.manifest.permissions{bail!("Notes plugin permission was revoked or changed");}let args=notes_host_args(token)?;let local=std::env::var_os("HOME").map(PathBuf::from).map(|h|h.join(".local/bin/nyx-notes"));let exe=local.filter(|p|p.is_file()).unwrap_or_else(||PathBuf::from("nyx-notes"));Command::new(&exe).args(args).spawn().with_context(||format!("Could not start {}",exe.display()))?;Ok(())})())
+fn notes_host_args(token: &str) -> Result<Vec<String>> {
+    if token.len() > 4096 {
+        bail!("Notes action exceeds limit");
+    }
+    let request: NotesHostRequest = serde_json::from_str(token)?;
+    if request.api_version != 1
+        || !request.vault.is_absolute()
+        || request.vault.components().any(|c| c == std::path::Component::ParentDir)
+    {
+        bail!("Invalid Notes vault");
+    }
+    match request.op.as_str() {
+        "create" => {
+            let title = request.title.context("Missing note title")?;
+            if title.is_empty() || title.len() > 240 || title.starts_with('.') || title.contains(['/', '\\', '\0', '\n', '\r']) {
+                bail!("Invalid note title");
+            }
+        }
+        "open" => {
+            let path = request.path.context("Missing note path")?;
+            if !path.starts_with(&request.vault)
+                || path.components().any(|c| c == std::path::Component::ParentDir || c.as_os_str() == ".obsidian")
+            {
+                bail!("Note must remain inside its vault");
+            }
+        }
+        _ => bail!("Unsupported Notes operation"),
+    };
+    let _ = (request.offset, request.append);
+    Ok(vec!["--launcher-action".into(), token.into()])
 }
-#[cfg(test)]mod notes_action_tests{use super::*;#[test]fn notes_actions_never_execute_arbitrary_commands(){assert!(notes_host_args(r#"{"api_version":1,"op":"create","vault":"/home/test/Notes","title":"Research; echo nope"}"#).is_ok());assert!(notes_host_args(r#"{"api_version":1,"op":"exec","vault":"/home/test/Notes","title":"shell"}"#).is_err());assert!(notes_host_args(r#"{"api_version":1,"op":"open","vault":"/home/test/Notes","path":"/home/test/Notes/../secret.md"}"#).is_err());assert!(notes_host_args(r#"{"api_version":1,"op":"create","vault":"/home/test/Notes","title":"../escape"}"#).is_err());}}
+pub fn notes_host_action(paths: &Paths, id: &str, token: &str) -> Option<Result<()>> {
+    if id != "nyx-notes" {
+        return None;
+    }
+    Some((|| {
+        let plugin = get(paths, id)?;
+        if !plugin.grant.enabled
+            || plugin.grant.version != plugin.manifest.version
+            || plugin.grant.requested != plugin.manifest.permissions
+        {
+            bail!("Notes plugin permission was revoked or changed");
+        }
+        let args = notes_host_args(token)?;
+        let local = std::env::var_os("HOME").map(PathBuf::from).map(|h| h.join(".local/bin/nyx-notes"));
+        let exe = local.filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("nyx-notes"));
+        Command::new(&exe).args(args).spawn().with_context(|| format!("Could not start {}", exe.display()))?;
+        Ok(())
+    })())
+}
+#[cfg(test)]
+mod notes_action_tests {
+    use super::*;
+    #[test]
+    fn notes_actions_never_execute_arbitrary_commands() {
+        assert!(
+            notes_host_args(r#"{"api_version":1,"op":"create","vault":"/home/test/Notes","title":"Research; echo nope"}"#)
+                .is_ok()
+        );
+        assert!(notes_host_args(r#"{"api_version":1,"op":"exec","vault":"/home/test/Notes","title":"shell"}"#).is_err());
+        assert!(
+            notes_host_args(r#"{"api_version":1,"op":"open","vault":"/home/test/Notes","path":"/home/test/Notes/../secret.md"}"#)
+                .is_err()
+        );
+        assert!(notes_host_args(r#"{"api_version":1,"op":"create","vault":"/home/test/Notes","title":"../escape"}"#).is_err());
+    }
+}
 #[cfg(test)]
 mod rename_tests {
     use super::*;
@@ -821,4 +922,67 @@ mod rename_tests {
         migrate_nixe(&p).unwrap();
         assert!(registry(&p).unwrap()["nyx-notes"].enabled);
     }
+}
+
+/// Enumeration and execution use the same sandbox/grant checks as search.
+pub fn contextual_actions(p: &Paths, id: &str, result_id: &str) -> Result<Vec<glimpse_plugin_sdk::ContextAction>> {
+    let plugin = get(p, id)?;
+    let values = call(p, id, "contextual_actions", "actions", json!({"result_id":result_id}))?;
+    let actions: Vec<glimpse_plugin_sdk::ContextAction> = serde_json::from_value(values)?;
+    if actions.len() > 32 {
+        bail!("Too many contextual actions");
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for action in &actions {
+        if !valid_id(&action.id)
+            || !ids.insert(action.id.clone())
+            || action.title.is_empty()
+            || action.title.len() > 200
+            || !valid_action(p, &plugin, &action.action)
+        {
+            bail!("Invalid contextual action");
+        }
+    }
+    Ok(actions)
+}
+pub fn contextual_activate(p: &Paths, id: &str, result_id: &str, action_id: &str) -> Result<Action> {
+    // Re-enumeration prevents stale or changed actions from bypassing a revoked grant.
+    let action = contextual_actions(p, id, result_id)?
+        .into_iter()
+        .find(|a| a.id == action_id)
+        .context("Plugin action is no longer available")?
+        .action;
+    match action {
+        Action::Activate { token } => {
+            let plugin = get(p, id)?;
+            let action: Action = serde_json::from_value(call(
+                p,
+                id,
+                "contextual_actions",
+                "activate",
+                json!({"token":token,"result_id":result_id,"action_id":action_id}),
+            )?)?;
+            if matches!(action, Action::Activate { .. }) || !valid_action(p, &plugin, &action) {
+                bail!("Invalid contextual host action");
+            }
+            Ok(action)
+        }
+        action => Ok(action),
+    }
+}
+
+/// Fetch one plugin afresh when resolving an explicit alias; grants remain authoritative.
+pub fn search_one(p: &Paths, id: &str, q: &str, cancelled: &dyn Fn() -> bool) -> Vec<Hit> {
+    let Ok(plugin) = get(p, id) else {
+        return vec![];
+    };
+    let cap = if plugin.manifest.capabilities.iter().any(|c| c == "search") { "search" } else { "commands" };
+    let reply = call_cancel(p, id, cap, "search", json!({"query":q,"limit":10}), cancelled)
+        .and_then(|v| Ok(serde_json::from_value::<Vec<Hit>>(v)?));
+    reply
+        .unwrap_or_default()
+        .into_iter()
+        .take(10)
+        .filter(|hit| hit.title.len() <= 512 && hit.subtitle.len() <= 2048 && valid_action(p, &plugin, &hit.action))
+        .collect()
 }

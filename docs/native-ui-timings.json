@@ -1,0 +1,33 @@
+{
+  "kind": "native GTK workflow; synthetic text changes, not physical hotkeys",
+  "timings": [
+    {
+      "elapsed_us": 148898,
+      "event": "process-to-first-frame"
+    },
+    {
+      "elapsed_us": 63635,
+      "event": "search-to-frame"
+    },
+    {
+      "elapsed_us": 63650,
+      "event": "search-to-frame"
+    },
+    {
+      "elapsed_us": 555450,
+      "event": "search-to-frame"
+    },
+    {
+      "elapsed_us": 34617,
+      "event": "search-to-frame"
+    },
+    {
+      "elapsed_us": 34635,
+      "event": "search-to-frame"
+    },
+    {
+      "elapsed_us": 243793,
+      "event": "search-to-frame"
+    }
+  ]
+}

@@ -76,6 +76,13 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
             "General",
             vec![
                 switch("preview", "Show previews", c.preview),
+                switch("learning", "Learn from search selections", c.learning),
+                button(
+                    "clear-learning",
+                    "Search history and learned ranking",
+                    "Clear",
+                    "Delete search history and learned terms? Favorites and aliases are kept.",
+                ),
                 switch("paused", "Pause indexing", c.paused),
                 switch("service", "Start indexing at login", service_enabled),
             ],
@@ -84,6 +91,8 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
             "Shortcuts",
             vec![
                 switch("shortcuts", "Use Glimpse shortcuts", shortcuts_enabled(p)),
+                entry("action_key", "Contextual actions", &c.action_key, "<Control>k"),
+                entry("favorite_key", "Toggle favorite", &c.favorite_key, "<Control><Shift>f"),
                 json!({"kind":"entry","key":"search_key","title":"Search shortcut","value":c.search_key,"placeholder":"SUPER + SPACE","disabled":!shortcuts_enabled(p),"refresh":true}),
                 json!({"kind":"entry","key":"menu_key","title":"Omarchy menu shortcut","value":c.menu_key,"placeholder":"CTRL + SPACE","disabled":!shortcuts_enabled(p),"refresh":true}),
             ],
@@ -195,6 +204,21 @@ pub fn dispatch(p: &Paths, args: &[String]) -> Result<()> {
             let _lock = crate::ai_setup::config_lock(p)?;
             let mut c = p.load()?;
             match key.as_str() {
+                "learning" => {
+                    c.learning = value.parse()?;
+                    p.save(&c)?;
+                }
+                "clear-learning" => {
+                    crate::learning::clear(p)?;
+                }
+                "action_key" => {
+                    c.action_key = value.into();
+                    p.save(&c)?;
+                }
+                "favorite_key" => {
+                    c.favorite_key = value.into();
+                    p.save(&c)?;
+                }
                 "paused" => {
                     c.paused = value.parse()?;
                     p.save(&c)?;

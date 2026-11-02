@@ -83,3 +83,109 @@ pub fn semantic_allowed(q: &str) -> bool {
         || q.trim().starts_with("code:")
         || terms(q).iter().filter(|t| t.text.chars().any(char::is_alphabetic)).count() >= 2
 }
+
+/// Lower is better. Relevance tiers always precede personal usage bonuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Quality(pub u8, pub u16);
+
+/// Construct once per query; names passed to `score_lower` are cached lowercase text.
+pub struct Matcher {
+    text: String,
+    requested: Vec<Term>,
+}
+impl Matcher {
+    pub fn new(q: &str) -> Self {
+        Self { text: q.trim().trim_matches('"').to_lowercase(), requested: terms(q) }
+    }
+    pub fn score(&self, name: &str) -> Option<Quality> {
+        self.score_lower(&name.to_lowercase())
+    }
+    pub fn score_lower(&self, name: &str) -> Option<Quality> {
+        if self.requested.is_empty() || self.text.chars().count() > 256 {
+            return None;
+        }
+        if name == self.text {
+            return Some(Quality(1, 0));
+        }
+        let words: Vec<_> = name.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).collect();
+        // Initialisms are intentional abbreviations, not arbitrary one-letter matches.
+        if self.requested.len() == 1
+            && !self.requested[0].phrase
+            && self.text.len() >= 2
+            && self.text.chars().all(char::is_alphabetic)
+            && words.iter().filter_map(|w| w.chars().next()).collect::<String>() == self.text
+        {
+            return Some(Quality(5, 0));
+        }
+        let mut quality = Quality(if name.starts_with(&self.text) { 3 } else { 4 }, 0);
+        for (i, term) in self.requested.iter().enumerate() {
+            if term.phrase {
+                let phrase: Vec<_> = term.text.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).collect();
+                if phrase.is_empty() || !words.windows(phrase.len()).any(|w| w == phrase) {
+                    return None;
+                }
+                continue;
+            }
+            let numeric = term.text.chars().all(char::is_numeric);
+            if words.iter().any(|w| *w == term.text || (!numeric && i + 1 == self.requested.len() && w.starts_with(&term.text))) {
+                continue;
+            }
+            if numeric {
+                return None;
+            }
+            let q: Vec<char> = term.text.chars().collect();
+            let best = words
+                .iter()
+                .filter_map(|word| {
+                    let w: Vec<char> = word.chars().collect();
+                    // Subsequence matching stays within a word and starts at its beginning.
+                    if q.len() >= 3 && w.first() == q.first() && q.len() * 2 >= w.len() {
+                        let mut at = 0;
+                        for ch in &w {
+                            if q.get(at) == Some(ch) {
+                                at += 1;
+                            }
+                        }
+                        if at == q.len() {
+                            return Some(Quality(6, (w.len() - q.len()) as u16));
+                        }
+                    }
+                    let limit = if q.len() >= 8 {
+                        2
+                    } else if q.len() >= 4 {
+                        1
+                    } else {
+                        0
+                    };
+                    if limit == 0 || w.len().abs_diff(q.len()) > limit {
+                        return None;
+                    }
+                    let edits = edit_distance(&q, &w, limit);
+                    (edits <= limit).then_some(Quality(7, edits as u16))
+                })
+                .min()?;
+            quality = Quality(quality.0.max(best.0), quality.1.saturating_add(best.1));
+        }
+        Some(quality)
+    }
+}
+fn edit_distance(a: &[char], b: &[char], limit: usize) -> usize {
+    let mut prev2 = vec![0; b.len() + 1];
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        row[0] = i;
+        for j in 1..=b.len() {
+            row[j] = (prev[j] + 1).min(row[j - 1] + 1).min(prev[j - 1] + usize::from(a[i - 1] != b[j - 1]));
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                row[j] = row[j].min(prev2[j - 2] + 1);
+            }
+        }
+        if *row.iter().min().unwrap_or(&0) > limit {
+            return limit + 1;
+        }
+        std::mem::swap(&mut prev2, &mut prev);
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
+}

@@ -1,10 +1,10 @@
 use crate::player::Player;
+use crate::pw;
 use gtk::{gdk, gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use crate::pw;
 use nyx_glimpse::{
     config::{self, Paths},
-    index, passwords, plugins, query, semantic, utility,
+    index, learning, metrics, omarchy, passwords, plugins, providers, query, semantic, utility,
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,13 +18,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 /// The launcher keeps one width; it only grows downwards once there are results.
 const WIDTH: i32 = 760;
 const COLLAPSED: i32 = 56;
 const EXPANDED: i32 = 460;
 const LIST_WIDTH: i32 = 300;
+static LEARNING_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 thread_local! {static PANEL:RefCell<Option<gtk::ApplicationWindow>>=const{RefCell::new(None)};}
 #[derive(Clone)]
 enum Action {
@@ -32,6 +33,7 @@ enum Action {
     File(PathBuf, Value),
     Copy(String),
     System(&'static str),
+    Command(providers::Target),
     Plugin(String, String, plugins::Action),
     /// A Nyx Passwords row (`pw …`): an item's id and metadata, never a secret.
     Password(pw::Pw),
@@ -52,7 +54,7 @@ impl ResultRow {
             Action::File(_, ref hit) if hit["related"] == true => (RELATED, "Related"),
             Action::File(_, _) => (1, "Files"),
             Action::Copy(_) => (2, "Utilities"),
-            Action::System(_) => (3, "System"),
+            Action::System(_) | Action::Command(_) => (3, "System"),
             Action::Plugin(_, _, _) => (4, "Plugins"),
             Action::Password(_) => (0, "Passwords"),
         }
@@ -63,9 +65,48 @@ impl ResultRow {
             Action::File(path, _) => format!("file:{}", path.display()),
             Action::Copy(value) => format!("copy:{value}"),
             Action::System(cmd) => format!("system:{cmd}"),
+            Action::Command(providers::Target::Omarchy(id)) => omarchy::result_id(id),
+            Action::Command(providers::Target::Service(id)) => format!("service:{id}"),
+            Action::Command(_) => String::new(),
             Action::Plugin(id, hit, _) => format!("plugin:{id}:{hit}"),
             Action::Password(p) => p.key(),
         }
+    }
+}
+fn provider_row(candidate: providers::Candidate) -> ResultRow {
+    let action = match candidate.target {
+        providers::Target::App(id) => Action::App(id),
+        providers::Target::File(path) => Action::File(path, Value::Null),
+        providers::Target::System(cmd) => Action::Command(providers::Target::System(cmd)),
+        providers::Target::Plugin(id, hit, action) => Action::Plugin(id, hit, action),
+        target => Action::Command(target),
+    };
+    ResultRow { title: candidate.title, folder: candidate.subtitle, reason: String::new(), action }
+}
+fn record_selection(result: &ResultRow) {
+    let query = SEARCH.with(|s| s.borrow().as_ref().map(|s| s.text().to_string())).unwrap_or_default();
+    let id = result.identity();
+    let app = SEARCH.with(|s| {
+        s.borrow().as_ref().and_then(|s| s.root()).and_then(|r| r.downcast::<gtk::Window>().ok()).and_then(|w| w.application())
+    });
+    if learning::eligible_id(&id) && passwords::parse(&query).is_none() {
+        LEARNING_PENDING.fetch_add(1, Ordering::Relaxed);
+        let hold = app.map(|app| app.hold());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = learning::record(&Paths::discover(), &id, &query);
+            LEARNING_PENDING.fetch_sub(1, Ordering::Relaxed);
+            let _ = tx.send(());
+        });
+        let mut hold = hold;
+        glib::timeout_add_local(Duration::from_millis(10), move || {
+            if rx.try_recv().is_ok() {
+                hold.take();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 }
 /// A file's folder for display, with the home folder as "~".
@@ -212,6 +253,7 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     let entry =
         gtk::SearchEntry::builder().placeholder_text("Search apps, files and content").search_delay(0).hexpand(true).build();
     entry.add_css_class("glimpse-search");
+    entry.set_search_delay(0);
     search_bar.append(&entry);
     main.append(&search_bar);
     // Results on the left, the selected one previewed on the right; or an empty state.
@@ -249,7 +291,21 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                     && !app.windows().iter().any(|other| other.is_visible())
                 {
                     // A dismissed launcher should release its native surface and D-Bus name.
-                    app.quit();
+                    if LEARNING_PENDING.load(Ordering::Relaxed) == 0 {
+                        app.quit();
+                    } else {
+                        glib::timeout_add_local(Duration::from_millis(10), move || {
+                            if app.windows().iter().any(|w| w.is_visible()) {
+                                return glib::ControlFlow::Break;
+                            }
+                            if LEARNING_PENDING.load(Ordering::Relaxed) == 0 {
+                                app.quit();
+                                glib::ControlFlow::Break
+                            } else {
+                                glib::ControlFlow::Continue
+                            }
+                        });
+                    }
                 }
             });
         }
@@ -332,6 +388,10 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
             row.set_header(Some(&label));
         }
     });
+    let search_started = Rc::new(Cell::new(Instant::now()));
+    let search_render = search_started.clone();
+    let search_input = search_started.clone();
+    window.connect_map(move |w| trace_frame(w, "process-to-first-frame", metrics::started()));
     let generation = Arc::new(AtomicU64::new(0));
     let (tx, rx) = mpsc::channel::<Reply>();
     let (jobs, job_rx) = mpsc::channel::<(u64, String)>();
@@ -356,6 +416,10 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     let tx_enrich = tx.clone();
     std::thread::spawn(move || {
         let p = Paths::discover();
+        let mut extensions = providers::Extensions;
+        let mut extra = providers::Registry::default();
+        let _ = extra.register(omarchy::Omarchy::default());
+        let _ = extra.register(providers::DesktopServices);
         let mut session: Option<semantic::Session> = None;
         let mut session_device = String::new();
         loop {
@@ -386,14 +450,27 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 session = None;
                 session_device = c.device.clone();
             }
-            let mut enrich = Vec::new();
-            for (id, hit) in plugins::search_cancel(&p, q, cancelled) {
-                enrich.push(ResultRow {
-                    title: hit.title,
-                    folder: hit.subtitle,
-                    reason: String::new(),
-                    action: Action::Plugin(id, hit.id, hit.action),
+            let profile = learning::Profile::load(&p, &c).unwrap_or_default();
+            let (candidates, errors) =
+                extra.search(&providers::SearchContext { paths: &p, config: &c, query: q, cancelled: &cancelled }, &profile);
+            let mut enrich: Vec<_> = candidates.into_iter().take(30).map(|(_, candidate)| provider_row(candidate)).collect();
+            if !enrich.is_empty() {
+                let _ = tx_enrich.send(Reply {
+                    generation: request_generation,
+                    rows: std::mem::take(&mut enrich),
+                    append: true,
+                    status: String::new(),
                 });
+            }
+            if !errors.is_empty() && metrics::enabled() {
+                eprintln!("Glimpse provider diagnostics: {}", errors.join("; "));
+            }
+
+            if let Ok(hits) = providers::Provider::discover(
+                &mut extensions,
+                &providers::SearchContext { paths: &p, config: &c, query: q, cancelled: &cancelled },
+            ) {
+                enrich.extend(hits.into_iter().map(provider_row));
             }
             let mut semantic_status = String::new();
             if c.semantic && query::semantic_allowed(q) && !cancelled() {
@@ -430,10 +507,13 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     let tx_pw = tx.clone();
     let gen_worker = generation.clone();
     std::thread::spawn(move || {
+        let mut registry = providers::Registry::default();
+        let _ = registry.register(providers::Applications(apps));
+        let mut files = providers::Files::default();
         // One index connection for the life of the window, not one per keystroke.
         let mut db: Option<rusqlite::Connection> = None;
         while let Ok((mut request_generation, mut query)) = job_rx.recv() {
-            std::thread::sleep(Duration::from_millis(70));
+            std::thread::sleep(Duration::from_millis(10));
             while let Ok((g, q)) = job_rx.try_recv() {
                 request_generation = g;
                 query = q;
@@ -475,36 +555,30 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 let _ = tx.send(Reply { generation: request_generation, rows: found, append: false, status: error });
                 continue;
             }
-            let mut matching_apps: Vec<_> = apps
-                .iter()
-                .filter_map(|(id, name, keywords)| {
-                    let rank = query::name_rank(name, q).or_else(|| query::name_rank(keywords, q).map(|r| r + 3))?;
-                    Some((rank, name, id))
-                })
-                .collect();
-            matching_apps.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
-            for (_, name, id) in matching_apps.into_iter().take(12) {
-                found.push(ResultRow {
-                    title: name.clone(),
-                    folder: String::new(),
-                    reason: String::new(),
-                    action: Action::App(id.clone()),
-                });
+            let profile = learning::Profile::load(&p, &c).unwrap_or_default();
+            let cancelled = || gen_worker.load(Ordering::Relaxed) != request_generation;
+            let (candidates, _) =
+                registry.search(&providers::SearchContext { paths: &p, config: &c, query: q, cancelled: &cancelled }, &profile);
+            let mut app_count = 0;
+            for (_, candidate) in candidates {
+                if matches!(candidate.target, providers::Target::App(_)) {
+                    app_count += 1;
+                    if app_count > 12 {
+                        continue;
+                    }
+                }
+                found.push(provider_row(candidate));
+            }
+            // Applications paint before a large filename catalogue or content lookup finishes.
+            let _ = tx.send(Reply { generation: request_generation, rows: found.clone(), append: false, status: String::new() });
+            if let Ok(hits) = providers::Provider::discover(
+                &mut files,
+                &providers::SearchContext { paths: &p, config: &c, query: q, cancelled: &cancelled },
+            ) {
+                found.extend(hits.into_iter().map(provider_row));
             }
             if db.is_none() {
                 db = index::open(&p).ok();
-            }
-            if let Some(conn) = &db
-                && let Ok(files) = index::search_in(conn, &c, q, 30)
-            {
-                for f in files {
-                    found.push(ResultRow {
-                        title: f.name,
-                        folder: folder_of(&f.path),
-                        reason: String::new(),
-                        action: Action::File(f.path, Value::Null),
-                    });
-                }
             }
             if let Some(conn) = &db
                 && let Ok(hits) = index::content_search_in(conn, &p, &c, q)
@@ -641,6 +715,9 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 content_poll.set_visible_child_name("results");
             }
             count_poll.set_text(&count_text(merged.len()));
+            if let Some(w) = window_weak.upgrade() {
+                trace_frame(&w, "search-to-frame", search_render.get());
+            }
             let unchanged = {
                 let old = rows_poll.borrow();
                 old.len() == merged.len()
@@ -686,6 +763,7 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     let list_entry = list.clone();
     let rows_entry = rows.clone();
     let browsing_entry = browsing.clone();
+    entry.connect_changed(move |_| search_input.set(Instant::now()));
     entry.connect_search_changed(move |e| {
         browsing_entry.set(false);
         let expanded = !e.text().trim().is_empty();
@@ -806,6 +884,10 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 pane.add_detail("Copies", value);
                 return;
             }
+            Action::Command(_) => {
+                pane.card(&icon, &result.title, &result.folder, false);
+                return;
+            }
             Action::System(cmd) => {
                 pane.card(&icon, "", system_description(cmd), false);
                 return;
@@ -885,6 +967,29 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
             activate(result, &win_activate, &footer_activate, &armed_activate, false);
         }
     });
+    let actions = ActionPanel::new(&entry, &window, &footer, &entry, &armed);
+    let actions_button = actions.clone();
+    let actions_rows = rows.clone();
+    let actions_list = list.clone();
+    let binding = Paths::discover().load().unwrap_or_default().action_key;
+    let caption =
+        gtk::accelerator_parse(&binding).map(|(key, mods)| gtk::accelerator_get_label(key, mods).to_string()).unwrap_or(binding);
+    status_bar.append(&nyx_ui::chrome::status_action("view-more-symbolic", &format!("Actions ({caption})"), move || {
+        if let Some(result) = actions_list.selected_row().and_then(|r| actions_rows.borrow().get(r.index() as usize).cloned()) {
+            actions_button.open(result);
+        }
+    }));
+    let native_action = gio::SimpleAction::new("context-actions", None);
+    let native_panel = actions.clone();
+    let native_rows = rows.clone();
+    let native_list = list.clone();
+    native_action.connect_activate(move |_, _| {
+        if let Some(result) = native_list.selected_row().and_then(|r| native_rows.borrow().get(r.index() as usize).cloned()) {
+            native_panel.open(result);
+        }
+    });
+    window.add_action(&native_action);
+    let actions_keys = actions.clone();
     let keys = gtk::EventControllerKey::new();
     let list_keys = list.clone();
     let win_keys = window.clone();
@@ -900,6 +1005,31 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     click.connect_pressed(move |_, _, _, _| browsing.set(true));
     list.add_controller(click);
     keys.connect_key_pressed(move |_, key, _, mods| {
+        if actions_keys.popover.is_visible() {
+            return glib::Propagation::Proceed;
+        }
+        let c = Paths::discover().load().unwrap_or_default();
+        let normalized_mods = mods & gtk::accelerator_get_default_mod_mask();
+        if gtk::accelerator_parse(&c.action_key).map(|(k, m)| (k.to_lower(), m)) == Some((key.to_lower(), normalized_mods)) {
+            if let Some(row) = list_keys.selected_row().and_then(|r| rows_keys.borrow().get(r.index() as usize).cloned()) {
+                actions_keys.open(row);
+            }
+            return glib::Propagation::Stop;
+        }
+        if gtk::accelerator_parse(&c.favorite_key).map(|(k, m)| (k.to_lower(), m)) == Some((key.to_lower(), normalized_mods)) {
+            if let Some(row) = list_keys.selected_row().and_then(|r| rows_keys.borrow().get(r.index() as usize).cloned()) {
+                if let Err(e) = learning::favorite(&Paths::discover(), &row.identity()) {
+                    footer_keys.set_text(&e.to_string());
+                } else {
+                    footer_keys.set_text("Favorite updated");
+                }
+            }
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::Up && entry_keys.text().is_empty() {
+            actions_keys.history();
+            return glib::Propagation::Stop;
+        }
         match key {
             gdk::Key::Escape => {
                 win_keys.set_visible(false);
@@ -980,6 +1110,8 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
         glib::Propagation::Stop
     });
     window.add_controller(keys);
+    let popover = actions.popover.clone();
+    window.connect_destroy(move |_| popover.unparent());
     let next_list = list.clone();
     entry.connect_next_match(move |_| navigate_result(&next_list, 1));
     let previous_list = list.clone();
@@ -1308,7 +1440,7 @@ fn set_hints(hints: &gtk::Box, action: Option<&Action>) {
         Some(Action::App(_)) => vec![(enter, "Launch")],
         Some(Action::Copy(_)) => vec![(enter, "Copy")],
         Some(Action::System("lock")) => vec![(enter, "Lock")],
-        Some(Action::System(_)) => vec![(enter, "Run")],
+        Some(Action::System(_)) | Some(Action::Command(_)) => vec![(enter, "Run")],
         Some(Action::Plugin(..)) => vec![(enter, "Open")],
         Some(Action::Password(p)) => p.hints(),
         None => vec![],
@@ -1334,6 +1466,7 @@ fn symbolic_icon(action: &Action) -> &'static str {
         Action::System("logout") => "system-log-out-symbolic",
         Action::System("reboot") => "system-reboot-symbolic",
         Action::System(_) => "system-shutdown-symbolic",
+        Action::Command(_) => "system-run-symbolic",
         Action::Plugin(..) => "application-x-addon-symbolic",
         Action::Password(p) => p.icon(),
     }
@@ -1368,6 +1501,13 @@ fn result_row(result: &ResultRow) -> gtk::ListBoxRow {
         text.append(&folder);
     }
     line.append(&text);
+    if Paths::discover().load().is_ok_and(|c| c.favorites.contains(&result.identity())) {
+        let favorite = gtk::Image::from_icon_name("starred-symbolic");
+        favorite.set_pixel_size(14);
+        favorite.add_css_class("result-icon");
+        favorite.set_tooltip_text(Some("Favorite"));
+        line.append(&favorite);
+    }
     if !result.reason.is_empty() {
         line.append(&nyx_ui::widgets::tag(&result.reason, if result.reason == "Related" { "" } else { "accent" }));
     }
@@ -1659,11 +1799,21 @@ fn activate(
     result: &ResultRow,
     window: &gtk::ApplicationWindow,
     status: &gtk::Label,
-    armed: &RefCell<Option<String>>,
+    armed: &Rc<RefCell<Option<String>>>,
     reveal: bool,
 ) {
+    if let Action::Command(target) = &result.action {
+        dispatch_command(target.clone(), result.clone(), window.clone(), status.clone(), armed.clone());
+        return;
+    }
     if let Action::Plugin(id, result_id, plugins::Action::Activate { token }) = &result.action {
-        if let Some(result)=plugins::notes_host_action(&Paths::discover(),id,token){match result{Ok(())=>window.set_visible(false),Err(e)=>status_error(status,e)}return;}
+        if let Some(result) = plugins::notes_host_action(&Paths::discover(), id, token) {
+            match result {
+                Ok(()) => window.set_visible(false),
+                Err(e) => status_error(status, e),
+            }
+            return;
+        }
         if let Some(flag) = plugins::capture_host_args(id, token) {
             match plugins::spawn_capture(flag) {
                 Ok(()) => window.set_visible(false),
@@ -1686,8 +1836,12 @@ fn activate(
         });
         let window = window.clone();
         let status = status.clone();
+        let activation_query = SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string()));
         status.set_text("Running plugin action…");
         glib::timeout_add_local(Duration::from_millis(25), move || {
+            if !window.is_visible() || SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string())) != activation_query {
+                return glib::ControlFlow::Break;
+            }
             if let Ok(reply) = rx.try_recv() {
                 match reply {
                     Ok(action) => activate(
@@ -1699,7 +1853,7 @@ fn activate(
                         },
                         &window,
                         &status,
-                        &RefCell::new(None),
+                        &Rc::new(RefCell::new(None)),
                         reveal,
                     ),
                     Err(e) => status.set_text(&e),
@@ -1717,16 +1871,19 @@ fn activate(
         match action {
             Action::Copy(text) => window.clipboard().set_text(&text),
             Action::App(id) => {
-                gio::AppInfo::all()
-                    .into_iter()
-                    .find(|a| a.id().is_some_and(|x| x == id))
-                    .ok_or_else(|| anyhow::anyhow!("application unavailable"))?
+                let providers::Effect::LaunchApp(id, _) = providers::resolve(&p, &providers::Target::App(id), "open")? else {
+                    unreachable!()
+                };
+                gio_unix::DesktopAppInfo::new(&id)
+                    .ok_or_else(|| anyhow::anyhow!("Application unavailable"))?
                     .launch(&[], None::<&gio::AppLaunchContext>)?;
             }
             Action::File(path, hit) => {
-                if !config::allowed(&p.load()?, &path) {
-                    anyhow::bail!("source no longer permitted");
-                }
+                let providers::Effect::OpenFile(path, reveal) =
+                    providers::resolve(&p, &providers::Target::File(path), if reveal { "reveal" } else { "open" })?
+                else {
+                    unreachable!()
+                };
                 open_file(&path, &hit, reveal)?;
             }
             Action::System(cmd) => {
@@ -1740,7 +1897,7 @@ fn activate(
             }
             Action::Plugin(id, _, action) => {
                 let plugin = plugins::get(&p, &id)?;
-                if !plugin.grant.enabled || !plugins::valid_action(&p, &plugin, &action) {
+                if !plugins::authorized(&plugin) || !plugins::valid_action(&p, &plugin, &action) {
                     anyhow::bail!("plugin permission revoked");
                 }
                 let action = if let plugins::Action::Activate { token } = action {
@@ -1760,7 +1917,7 @@ fn activate(
                 }
             }
             // Routed to `pw::activate` before this; nothing to do here.
-            Action::Password(_) => {}
+            Action::Password(_) | Action::Command(_) => {}
         }
         Ok(())
     })();
@@ -1768,6 +1925,7 @@ fn activate(
         Err(e) => status_error(status, e),
         Ok(()) => {
             if armed.borrow().is_none() {
+                record_selection(result);
                 window.set_visible(false);
             }
         }
@@ -2092,17 +2250,14 @@ pub fn plugin_manager(app: &gtk::Application) {
     pages.set_transition_type(gtk::StackTransitionType::Crossfade);
     pages.set_transition_duration(120);
     let current = PLUGIN_TAB.with(|t| t.borrow().clone());
-    let tabs = nyx_ui::widgets::segmented(
-        &[("installed".into(), "Installed".into()), ("browse".into(), "Browse".into())],
-        &current,
-        {
+    let tabs =
+        nyx_ui::widgets::segmented(&[("installed".into(), "Installed".into()), ("browse".into(), "Browse".into())], &current, {
             let pages = pages.clone();
             move |id| {
                 pages.set_visible_child_name(&id);
                 PLUGIN_TAB.with(|t| *t.borrow_mut() = id);
             }
-        },
-    );
+        });
     header.center.append(&tabs);
     let note = gtk::Label::new(None);
     note.add_css_class("plugins-note");
@@ -2246,7 +2401,11 @@ fn installed_page(app: &gtk::Application, items: &[plugins::Plugin], note: &gtk:
                 let id = id.clone();
                 run_task(st.clone(), move || {
                     let p = Paths::discover();
-                    if op == "update" { plugins::update(&p, &id)?; } else { plugins::rollback(&p, &id)?; }
+                    if op == "update" {
+                        plugins::update(&p, &id)?;
+                    } else {
+                        plugins::rollback(&p, &id)?;
+                    }
                     Ok("Plugin updated.".into())
                 });
             });
@@ -2273,7 +2432,11 @@ fn installed_page(app: &gtk::Application, items: &[plugins::Plugin], note: &gtk:
             let id = id.clone();
             run_task(st.clone(), move || {
                 let p = Paths::discover();
-                if on { plugins::enable(&p, &id, true)? } else { plugins::disable(&p, &id)? }
+                if on {
+                    plugins::enable(&p, &id, true)?
+                } else {
+                    plugins::disable(&p, &id)?
+                }
                 Ok(if on { "Plugin turned on." } else { "Plugin turned off." }.into())
             });
             glib::Propagation::Proceed
@@ -2691,5 +2854,608 @@ mod tests {
         assert_eq!(super::highlight("The Report & report", "report"), "The <b>Report</b> &amp; <b>report</b>");
         assert_eq!(super::highlight("Ärger ÄRGER", "ärger"), "<b>Ärger</b> <b>ÄRGER</b>");
         assert_eq!(super::highlight("abc", "zz"), "abc");
+    }
+}
+
+/// Resolve commands off the GTK thread and recheck availability immediately before launch.
+fn dispatch_command(
+    target: providers::Target,
+    result: ResultRow,
+    window: gtk::ApplicationWindow,
+    status: gtk::Label,
+    armed: Rc<RefCell<Option<String>>>,
+) {
+    let original_query = SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string()));
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let resolved = (|| -> anyhow::Result<(Vec<String>, bool, String)> {
+            match target {
+                providers::Target::Omarchy(id) => {
+                    let providers::Effect::Command(argv, confirm) =
+                        providers::resolve(&Paths::discover(), &providers::Target::Omarchy(id), "execute")?
+                    else {
+                        unreachable!()
+                    };
+                    Ok((argv, confirm, String::new()))
+                }
+                providers::Target::Service(unit) => {
+                    if !unit.ends_with(".service") || !unit.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.@:".contains(&b)) {
+                        anyhow::bail!("Invalid service");
+                    }
+                    let mut cmd = Command::new("systemctl");
+                    cmd.args([
+                        "--user",
+                        "show",
+                        "--no-pager",
+                        "--property=Id,Description,LoadState,ActiveState,SubState",
+                        "--",
+                        &unit,
+                    ]);
+                    let output = nyx_glimpse::process::capture(cmd, vec![], Duration::from_secs(2), 16384)?;
+                    let text = String::from_utf8_lossy(&output).into_owned();
+                    if text.is_empty() {
+                        anyhow::bail!("Service unavailable");
+                    }
+                    Ok((vec![], false, text))
+                }
+                _ => anyhow::bail!("Unsupported command provider"),
+            }
+        })();
+        let _ = tx.send(resolved);
+    });
+    let identity = result.identity();
+    glib::timeout_add_local(Duration::from_millis(20), move || {
+        if !window.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        let Ok(reply) = rx.try_recv() else {
+            return glib::ControlFlow::Continue;
+        };
+        if SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string())) != original_query {
+            return glib::ControlFlow::Break;
+        }
+        match reply {
+            Err(e) => status.set_text(&e.to_string()),
+            Ok((argv, confirm, detail)) => {
+                if argv.is_empty() {
+                    status.set_text(&detail.lines().collect::<Vec<_>>().join(" · "));
+                    return glib::ControlFlow::Break;
+                }
+
+                if confirm && armed.borrow().as_deref() != Some(identity.as_str()) {
+                    *armed.borrow_mut() = Some(identity.clone());
+                    status.set_text("Press Enter again to confirm");
+                } else {
+                    let launched = Command::new(&argv[0]).args(&argv[1..]).spawn();
+                    match launched {
+                        Ok(_) => {
+                            *armed.borrow_mut() = None;
+                            record_selection(&result);
+                            window.set_visible(false);
+                        }
+                        Err(e) => status.set_text(&e.to_string()),
+                    }
+                }
+            }
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+#[derive(Clone)]
+enum PanelVerb {
+    Open,
+    Reveal,
+    Copy,
+    Details,
+    Favorite,
+    Alias,
+    SaveAlias,
+    Desktop(String),
+    Password(passwords::Verb),
+    Plugin(String),
+    History(String),
+}
+#[derive(Clone)]
+struct PanelItem {
+    title: String,
+    verb: PanelVerb,
+}
+struct ActionPanel {
+    popover: gtk::Popover,
+    entry: gtk::SearchEntry,
+    list: gtk::ListBox,
+    items: RefCell<Vec<PanelItem>>,
+    visible: RefCell<Vec<PanelItem>>,
+    selected: RefCell<Option<ResultRow>>,
+    alias_mode: Cell<bool>,
+    details: RefCell<Option<String>>,
+    request: Cell<u64>,
+}
+impl ActionPanel {
+    fn new(
+        anchor: &gtk::SearchEntry,
+        window: &gtk::ApplicationWindow,
+        status: &gtk::Label,
+        search: &gtk::SearchEntry,
+        armed: &Rc<RefCell<Option<String>>>,
+    ) -> Rc<Self> {
+        let popover = gtk::Popover::new();
+        popover.set_parent(anchor);
+        popover.set_has_arrow(false);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.add_css_class("glimpse-actions");
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        body.set_size_request(330, -1);
+        let entry = gtk::SearchEntry::new();
+        entry.set_placeholder_text(Some("Search actions…"));
+        body.append(&entry);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.add_css_class("results");
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .max_content_height(300)
+            .propagate_natural_height(true)
+            .child(&list)
+            .build();
+        body.append(&scroll);
+        popover.set_child(Some(&body));
+        let panel = Rc::new(Self {
+            popover,
+            entry,
+            list,
+            items: RefCell::new(vec![]),
+            visible: RefCell::new(vec![]),
+            selected: RefCell::new(None),
+            alias_mode: Cell::new(false),
+            details: RefCell::new(None),
+            request: Cell::new(0),
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.entry.connect_search_changed(move |_| {
+            if let Some(p) = weak.upgrade() {
+                p.rebuild();
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        let (w, s, q, a) = (window.clone(), status.clone(), search.clone(), armed.clone());
+        panel.list.connect_row_activated(move |_, row| {
+            if let Some(p) = weak.upgrade() {
+                p.run(row.index() as usize, &w, &s, &q, &a);
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&panel);
+        let (w, s, q, a) = (window.clone(), status.clone(), search.clone(), armed.clone());
+        keys.connect_key_pressed(move |_, key, _, _| {
+            let Some(p) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            match key {
+                gdk::Key::Escape => {
+                    p.popover.popdown();
+                    q.grab_focus();
+                }
+                gdk::Key::Up | gdk::Key::Down => {
+                    let n = p.visible.borrow().len() as i32;
+                    if n > 0 {
+                        let i = p.list.selected_row().map(|r| r.index()).unwrap_or(0);
+                        let next = (i + if key == gdk::Key::Down { 1 } else { -1 }).rem_euclid(n);
+                        p.list.select_row(p.list.row_at_index(next).as_ref());
+                    }
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    let i = p.list.selected_row().map(|r| r.index() as usize).unwrap_or(0);
+                    p.run(i, &w, &s, &q, &a);
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        });
+        panel.popover.add_controller(keys);
+        let weak = Rc::downgrade(&panel);
+        let q = search.clone();
+        panel.popover.connect_closed(move |_| {
+            if let Some(p) = weak.upgrade() {
+                p.request.set(p.request.get() + 1);
+                p.selected.borrow_mut().take();
+            }
+            q.grab_focus();
+        });
+        panel
+    }
+    fn rebuild(&self) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        if let Some(detail) = self.details.borrow().as_ref() {
+            let label = gtk::Label::new(Some(detail));
+            label.set_wrap(true);
+            label.set_selectable(true);
+            label.set_max_width_chars(45);
+            self.list.append(&label);
+            return;
+        }
+        let query = self.entry.text().to_lowercase();
+        let items = if self.alias_mode.get() {
+            vec![PanelItem {
+                title: if query.trim().is_empty() { "Remove alias".into() } else { format!("Save alias: {}", self.entry.text()) },
+                verb: PanelVerb::SaveAlias,
+            }]
+        } else {
+            self.items
+                .borrow()
+                .iter()
+                .filter(|i| query.is_empty() || i.title.to_lowercase().contains(query.as_str()))
+                .cloned()
+                .collect()
+        };
+        for item in &items {
+            let label = nyx_ui::widgets::label(&item.title, "hint-label");
+            label.set_xalign(0.);
+            label.set_margin_start(10);
+            label.set_margin_end(10);
+            label.set_margin_top(8);
+            label.set_margin_bottom(8);
+            self.list.append(&label);
+        }
+        *self.visible.borrow_mut() = items;
+        self.list.select_row(self.list.row_at_index(0).as_ref());
+    }
+    fn open(self: &Rc<Self>, result: ResultRow) {
+        self.alias_mode.set(false);
+        self.details.borrow_mut().take();
+        self.request.set(self.request.get() + 1);
+        let mut items = vec![PanelItem { title: "Open".into(), verb: PanelVerb::Open }];
+        match &result.action {
+            Action::App(id) => {
+                if let Some(app) = gio_unix::DesktopAppInfo::new(id) {
+                    for action in app.list_actions() {
+                        let title = app.action_name(&action).to_string();
+                        items.push(PanelItem { title, verb: PanelVerb::Desktop(action.to_string()) });
+                    }
+                }
+            }
+            Action::File(path, _) => {
+                items = providers::actions(&providers::Target::File(path.clone()))
+                    .into_iter()
+                    .map(|a| PanelItem {
+                        title: a.title,
+                        verb: match a.id.as_str() {
+                            "reveal" => PanelVerb::Reveal,
+                            "copy-path" => PanelVerb::Copy,
+                            _ => PanelVerb::Open,
+                        },
+                    })
+                    .collect();
+            }
+            Action::Password(p) => {
+                items.clear();
+                if let pw::Pw::Item { kind, has_totp, .. } = p {
+                    items.push(PanelItem { title: "Copy username".into(), verb: PanelVerb::Password(passwords::Verb::Username) });
+                    if kind == "login" {
+                        items.push(PanelItem {
+                            title: "Copy password".into(),
+                            verb: PanelVerb::Password(passwords::Verb::Password),
+                        });
+                        items.push(PanelItem { title: "Open site".into(), verb: PanelVerb::Password(passwords::Verb::Open) });
+                        if *has_totp {
+                            items.push(PanelItem {
+                                title: "Copy one-time code".into(),
+                                verb: PanelVerb::Password(passwords::Verb::Totp),
+                            });
+                        }
+                    }
+                } else {
+                    items.push(PanelItem { title: "Open in Passwords".into(), verb: PanelVerb::Open });
+                }
+            }
+            Action::Command(providers::Target::Service(_)) => {
+                items[0].title = "View status".into();
+            }
+            Action::System(_) | Action::Command(_) => {
+                items[0].title = "Execute".into();
+            }
+            Action::Copy(_) => items[0].title = "Copy".into(),
+            _ => {}
+        }
+        let id = result.identity();
+        let c = Paths::discover().load().unwrap_or_default();
+        if learning::eligible_id(&id) {
+            items.push(PanelItem {
+                title: if c.favorites.contains(&id) { "Remove favorite" } else { "Add favorite" }.into(),
+                verb: PanelVerb::Favorite,
+            });
+            items.push(PanelItem { title: "Set alias…".into(), verb: PanelVerb::Alias });
+        }
+        items.push(PanelItem { title: "View details".into(), verb: PanelVerb::Details });
+        *self.selected.borrow_mut() = Some(result.clone());
+        *self.items.borrow_mut() = items;
+        self.entry.set_placeholder_text(Some("Search actions…"));
+        self.entry.set_text("");
+        self.rebuild();
+        self.popover.popup();
+        self.entry.grab_focus();
+        if let Action::Plugin(id, hit, _) = result.action {
+            let request = self.request.get();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(plugins::contextual_actions(&Paths::discover(), &id, &hit));
+            });
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local(Duration::from_millis(25), move || {
+                let Some(p) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if p.request.get() != request || !p.popover.is_visible() {
+                    return glib::ControlFlow::Break;
+                }
+                match rx.try_recv() {
+                    Ok(Ok(actions)) => {
+                        for action in actions {
+                            p.items.borrow_mut().push(PanelItem { title: action.title, verb: PanelVerb::Plugin(action.id) });
+                        }
+                        p.rebuild();
+                    }
+                    Ok(Err(_)) => {}
+                    Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                    Err(_) => {}
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    }
+    fn history(&self) {
+        self.details.borrow_mut().take();
+        self.alias_mode.set(false);
+        self.selected.borrow_mut().take();
+        *self.items.borrow_mut() = learning::history(&Paths::discover())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|q| PanelItem { title: q.clone(), verb: PanelVerb::History(q) })
+            .collect();
+        if self.items.borrow().is_empty() {
+            return;
+        }
+        self.entry.set_placeholder_text(Some("Search history…"));
+        self.entry.set_text("");
+        self.rebuild();
+        self.popover.popup();
+        self.entry.grab_focus();
+    }
+    fn run(
+        &self,
+        index: usize,
+        window: &gtk::ApplicationWindow,
+        status: &gtk::Label,
+        search: &gtk::SearchEntry,
+        armed: &Rc<RefCell<Option<String>>>,
+    ) {
+        let Some(item) = self.visible.borrow().get(index).cloned() else {
+            return;
+        };
+        if let PanelVerb::History(query) = item.verb {
+            self.popover.popdown();
+            search.set_text(&query);
+            search.grab_focus();
+            return;
+        }
+        let Some(result) = self.selected.borrow().clone() else {
+            return;
+        };
+        if matches!(item.verb, PanelVerb::Alias) {
+            self.alias_mode.set(true);
+            self.entry.set_placeholder_text(Some("Alias (empty removes it)"));
+            self.entry.set_text(
+                Paths::discover().load().ok().and_then(|c| c.aliases.get(&result.identity()).cloned()).as_deref().unwrap_or(""),
+            );
+            self.rebuild();
+            return;
+        }
+        if matches!(item.verb, PanelVerb::Details) {
+            self.entry.set_text("");
+            let detail = if matches!(result.action, Action::Password(_)) {
+                format!("{}\n{}", result.title, result.folder)
+            } else {
+                format!("{}\n{}\n{}", result.title, result.folder, result.identity())
+            };
+            *self.details.borrow_mut() = Some(detail);
+            self.rebuild();
+            return;
+        }
+        let alias = self.entry.text().to_string();
+        self.popover.popdown();
+        let outcome = (|| -> anyhow::Result<()> {
+            match item.verb {
+                PanelVerb::Open => {
+                    if let Action::Password(p) = &result.action {
+                        pw::activate(p, None, window, status);
+                    } else {
+                        activate(&result, window, status, armed, false);
+                    }
+                }
+                PanelVerb::Reveal => activate(&result, window, status, armed, true),
+                PanelVerb::Copy => {
+                    if let Action::File(path, _) = &result.action {
+                        if !config::allowed(&Paths::discover().load()?, path) {
+                            anyhow::bail!("Source permission revoked");
+                        }
+                        window.clipboard().set_text(&path.display().to_string());
+                        status.set_text("Copied path");
+                        record_selection(&result);
+                    }
+                }
+                PanelVerb::Favorite => {
+                    learning::favorite(&Paths::discover(), &result.identity())?;
+                    status.set_text("Favorite updated");
+                }
+                PanelVerb::SaveAlias => {
+                    learning::alias_for_query(&Paths::discover(), &result.identity(), &alias, Some(&search.text()))?;
+                    status.set_text("Alias updated");
+                }
+                PanelVerb::Desktop(action) => {
+                    if let Action::App(id) = &result.action {
+                        let app = gio_unix::DesktopAppInfo::new(id).ok_or_else(|| anyhow::anyhow!("Application unavailable"))?;
+                        if !app.list_actions().iter().any(|a| a == &action) {
+                            anyhow::bail!("Desktop action unavailable");
+                        }
+                        app.launch_action(&action, None::<&gio::AppLaunchContext>);
+                        record_selection(&result);
+                        window.set_visible(false);
+                    }
+                }
+                PanelVerb::Password(verb) => {
+                    if let Action::Password(p) = &result.action {
+                        pw::activate(p, Some(verb), window, status);
+                    }
+                }
+                PanelVerb::Plugin(action_id) => {
+                    if let Action::Plugin(id, hit, _) = &result.action {
+                        let (id, hit) = (id.clone(), hit.clone());
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(plugins::contextual_activate(&Paths::discover(), &id, &hit, &action_id));
+                        });
+                        let (window, status, armed, result) = (window.clone(), status.clone(), armed.clone(), result.clone());
+                        let original_query = search.text().to_string();
+                        glib::timeout_add_local(Duration::from_millis(20), move || {
+                            if !window.is_visible()
+                                || SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string())).as_deref()
+                                    != Some(original_query.as_str())
+                            {
+                                return glib::ControlFlow::Break;
+                            }
+                            match rx.try_recv() {
+                                Ok(Ok(action)) => {
+                                    if let Action::Plugin(id, hit, _) = &result.action {
+                                        let mut next = result.clone();
+                                        next.action = Action::Plugin(id.clone(), hit.clone(), action);
+                                        activate(&next, &window, &status, &armed, false);
+                                    }
+                                }
+                                Ok(Err(e)) => status.set_text(&e.to_string()),
+                                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                                Err(_) => status.set_text("Plugin action failed"),
+                            }
+                            glib::ControlFlow::Break
+                        });
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })();
+        if let Err(e) = outcome {
+            status.set_text(&e.to_string());
+        }
+        search.grab_focus();
+    }
+}
+
+fn trace_frame(window: &gtk::ApplicationWindow, event: &'static str, start: Instant) {
+    if !metrics::enabled() {
+        return;
+    }
+    if let Some(clock) = window.frame_clock() {
+        let id = Rc::new(RefCell::new(None));
+        let handle = id.clone();
+        *id.borrow_mut() = Some(clock.connect_after_paint(move |clock| {
+            metrics::timing(event, start.elapsed());
+            if let Some(id) = handle.borrow_mut().take() {
+                clock.disconnect(id);
+            }
+        }));
+        window.queue_draw();
+    }
+}
+
+#[cfg(test)]
+mod workflow_ui_tests {
+    use super::*;
+    fn pump_for(duration: Duration) {
+        let until = Instant::now() + duration;
+        while Instant::now() < until {
+            while glib::MainContext::default().pending() {
+                glib::MainContext::default().iteration(false);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut all = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(w) = child {
+            all.extend(descendants(&w));
+            child = w.next_sibling();
+        }
+        all
+    }
+    #[test]
+    #[ignore = "Requires an isolated Wayland output and scratch XDG directories"]
+    fn action_panel_alias_and_escape_workflow() {
+        assert!(std::env::var("GLIMPSE_MONITOR").is_ok_and(|s| s.starts_with("HEADLESS-")));
+        assert!(std::env::var("XDG_CONFIG_HOME").is_ok_and(|s| s.starts_with("/tmp/glimpse-ui-")));
+        metrics::start();
+        gtk::init().unwrap();
+        let app = gtk::Application::builder().application_id("io.github.design_nexus.nyx.GlimpseTest").build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        theme();
+        present(&app, false, Some("glimpseaudit"));
+        pump_for(Duration::from_millis(500));
+        let window = app.windows().into_iter().find(|w| w.is_visible()).unwrap().downcast::<gtk::ApplicationWindow>().unwrap();
+        gio::prelude::ActionGroupExt::activate_action(&window, "context-actions", None);
+        pump_for(Duration::from_millis(80));
+        let popover = descendants(window.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Popover>().ok())
+            .find(|p| p.is_visible())
+            .expect("Actions must open");
+        let nodes = descendants(popover.upcast_ref());
+        let list = nodes.iter().find_map(|w| w.clone().downcast::<gtk::ListBox>().ok()).unwrap();
+        let alias = descendants(list.upcast_ref())
+            .iter()
+            .find_map(|w| w.clone().downcast::<gtk::Label>().ok().filter(|l| l.text() == "Set alias…"))
+            .unwrap();
+        let row = alias.parent().unwrap().downcast::<gtk::ListBoxRow>().unwrap();
+        list.emit_by_name::<()>("row-activated", &[&row]);
+        let entry = nodes.iter().find_map(|w| w.clone().downcast::<gtk::SearchEntry>().ok()).unwrap();
+        entry.set_text("audit-alias");
+        pump_for(Duration::from_millis(30));
+        list.emit_by_name::<()>("row-activated", &[&list.row_at_index(0).unwrap()]);
+        pump_for(Duration::from_millis(30));
+        assert!(Paths::discover().load().unwrap().aliases.values().any(|a| a == "audit-alias"));
+        let search = SEARCH.with(|s| s.borrow().clone().unwrap());
+        search.set_text("audit-alias");
+        pump_for(Duration::from_millis(150));
+        gio::prelude::ActionGroupExt::activate_action(&window, "context-actions", None);
+        pump_for(Duration::from_millis(30));
+        assert!(popover.is_visible());
+        if let Ok(path) = std::env::var("GLIMPSE_TEST_SCREENSHOT") {
+            assert!(
+                Command::new("grim").args(["-o", &std::env::var("GLIMPSE_MONITOR").unwrap(), &path]).status().unwrap().success()
+            );
+        }
+        entry.set_text("details");
+        pump_for(Duration::from_millis(180));
+        list.emit_by_name::<()>("row-activated", &[&list.row_at_index(0).unwrap()]);
+        pump_for(Duration::from_millis(180));
+        assert!(
+            descendants(list.upcast_ref())
+                .iter()
+                .any(|w| w.clone().downcast::<gtk::Label>().is_ok_and(|l| l.text().contains("Glimpseaudit")))
+        );
+        let controllers = popover.observe_controllers();
+        let key = (0..controllers.n_items()).find_map(|i| controllers.item(i).and_downcast::<gtk::EventControllerKey>()).unwrap();
+        assert!(key.emit_by_name::<bool>("key-pressed", &[&gdk::Key::Escape, &0u32, &gdk::ModifierType::empty()]));
+        pump_for(Duration::from_millis(30));
+        assert!(!popover.is_visible());
+        assert_eq!(search.text(), "audit-alias");
+        println!(
+            "UI_RSS {}",
+            std::fs::read_to_string("/proc/self/status").unwrap().lines().find(|l| l.starts_with("VmRSS:")).unwrap()
+        );
+        window.destroy();
     }
 }
