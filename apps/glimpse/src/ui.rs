@@ -1199,13 +1199,14 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     }
 }
 /// Places the panel in the launcher's overlay at its requested size: centred across, with
-/// the collapsed search bar at mid-height so results grow downwards from it.
+/// the search bar fixed where the expanded panel sits centred on screen, so results grow
+/// downwards from it into the middle of the screen.
 fn place_panel(panel: &gtk::Box, (width, height): (i32, i32)) {
     let Some(backdrop) = panel.parent().and_downcast::<gtk::Fixed>() else { return };
     let w = panel.measure(gtk::Orientation::Horizontal, -1).0;
     let h = panel.measure(gtk::Orientation::Vertical, w).0;
     let x = ((width - w) / 2).max(0);
-    let y = ((height - COLLAPSED) / 2).clamp(0, (height - h).max(0));
+    let y = ((height - EXPANDED) / 2).clamp(0, (height - h).max(0));
     backdrop.move_(panel, x as f64, y as f64);
 }
 /// The right-hand pane: a framed content area, then a list of details. Every kind of
