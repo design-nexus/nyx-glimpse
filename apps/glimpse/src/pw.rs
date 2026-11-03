@@ -178,9 +178,20 @@ pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
 }
 
 /// Acts on a row: `verb` overrides the row's own (Ctrl+Enter, Alt+Enter, Ctrl+O, Ctrl+C).
-/// The window hides once the daemon has done it; errors stay in the status bar.
+/// The window hides once the daemon has done it; errors stay in the status bar. Something
+/// slower (a protected item waiting for the system's sign-in dialog) hides it at once, so
+/// the dialog gets the keyboard, and an error brings it back.
 pub fn activate(pw: &Pw, verb: Option<Verb>, window: &gtk::ApplicationWindow, status: &gtk::Label) {
     let (pw, window, status) = (pw.clone(), window.clone(), status.clone());
+    let pending = std::rc::Rc::new(std::cell::Cell::new(true));
+    {
+        let (pending, window) = (pending.clone(), window.clone());
+        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            if pending.get() {
+                window.set_visible(false);
+            }
+        });
+    }
     glib::spawn_future_local(async move {
         let done = match &pw {
             Pw::Item { id, verb: own, kind, has_totp, .. } => {
@@ -213,18 +224,27 @@ pub fn activate(pw: &Pw, verb: Option<Verb>, window: &gtk::ApplicationWindow, st
                 .map(|_| ())
                 .map_err(|_| "Couldn't open Passwords".to_string()),
             Pw::Unavailable => Err("Install Passwords with: nyx install passwords".to_string()),
-            Pw::Help => return,
+            Pw::Help => {
+                pending.set(false);
+                return;
+            }
         };
+        pending.set(false);
         match done {
             Ok(()) => window.set_visible(false),
-            Err(e) => status.set_text(&e),
+            Err(e) => {
+                status.set_text(&e);
+                window.present();
+            }
         }
     });
 }
 
 fn message(e: client::Fail) -> String {
     match e.code {
-        Some(Code::Reprompt) => "This item asks for the master password: open it in Passwords".into(),
+        Some(Code::Reprompt) => {
+            "This item asks for the master password: open it in Passwords, or turn on “Protected items in Glimpse” there".into()
+        }
         Some(Code::NoField) => "This item doesn't have that".into(),
         Some(Code::NoUrl) => "This item has no web address".into(),
         Some(Code::RateLimited) => "Too many copies in a row; wait a minute".into(),
