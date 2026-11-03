@@ -1,10 +1,11 @@
+use crate::cb;
 use crate::player::Player;
 use crate::pw;
 use gtk::{gdk, gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nyx_glimpse::{
     config::{self, Paths},
-    index, learning, metrics, omarchy, passwords, plugins, providers, query, semantic, utility,
+    clipboard, index, learning, metrics, omarchy, passwords, plugins, providers, query, semantic, utility,
 };
 use serde_json::{Value, json};
 use std::{
@@ -37,6 +38,8 @@ enum Action {
     Plugin(String, String, plugins::Action),
     /// A Nyx Passwords row (`pw …`): an item's id and metadata, never a secret.
     Password(pw::Pw),
+    /// A Nyx Clipboard row (`cb …`): an entry's id and kind; the service pastes it.
+    Clipboard(cb::Cb),
 }
 #[derive(Clone)]
 struct ResultRow {
@@ -57,6 +60,7 @@ impl ResultRow {
             Action::System(_) | Action::Command(_) => (3, "System"),
             Action::Plugin(_, _, _) => (4, "Plugins"),
             Action::Password(_) => (0, "Passwords"),
+            Action::Clipboard(_) => (0, "Clipboard"),
         }
     }
     fn identity(&self) -> String {
@@ -70,6 +74,7 @@ impl ResultRow {
             Action::Command(_) => String::new(),
             Action::Plugin(id, hit, _) => format!("plugin:{id}:{hit}"),
             Action::Password(p) => p.key(),
+            Action::Clipboard(c) => c.key(),
         }
     }
 }
@@ -89,7 +94,7 @@ fn record_selection(result: &ResultRow) {
     let app = SEARCH.with(|s| {
         s.borrow().as_ref().and_then(|s| s.root()).and_then(|r| r.downcast::<gtk::Window>().ok()).and_then(|w| w.application())
     });
-    if learning::eligible_id(&id) && passwords::parse(&query).is_none() {
+    if learning::eligible_id(&id) && passwords::parse(&query).is_none() && clipboard::parse(&query).is_none() {
         LEARNING_PENDING.fetch_add(1, Ordering::Relaxed);
         let hold = app.map(|app| app.hold());
         let (tx, rx) = mpsc::channel();
@@ -667,7 +672,7 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
         if invalidated.swap(false, Ordering::Relaxed) {
             pane_poll.set_visible(Paths::discover().load().is_ok_and(|c| c.preview));
             // A `pw` query never goes to the other providers.
-            if passwords::parse(&refresh_entry.text()).is_none() {
+            if passwords::parse(&refresh_entry.text()).is_none() && clipboard::parse(&refresh_entry.text()).is_none() {
                 let g = gen_poll.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = refresh_jobs.send((g, refresh_entry.text().to_string()));
             }
@@ -776,7 +781,9 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     entry.connect_search_changed(move |e| {
         browsing_entry.set(false);
         let expanded = !e.text().trim().is_empty();
-        let is_math = utility::intent(&e.text()) == utility::Intent::Calculation && passwords::parse(&e.text()).is_none();
+        let is_math = utility::intent(&e.text()) == utility::Intent::Calculation
+            && passwords::parse(&e.text()).is_none()
+            && clipboard::parse(&e.text()).is_none();
         pane_entry.show_calculator(is_math);
         stop_playback(&pane_entry.media, &playback_entry);
         if is_math {
@@ -816,6 +823,19 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 let rows = found
                     .into_iter()
                     .map(|(title, folder, p)| ResultRow { title, folder, reason: String::new(), action: Action::Password(p) })
+                    .collect();
+                let _ = tx.send(Reply { generation: g, rows, append: false, status });
+            });
+            return;
+        }
+        // `cb …` belongs to the clipboard history alone, like `pw`.
+        if let Some(q) = clipboard::parse(&e.text()) {
+            let tx = tx_pw.clone();
+            glib::spawn_future_local(async move {
+                let (found, status) = cb::lookup(&q).await;
+                let rows = found
+                    .into_iter()
+                    .map(|(title, folder, c)| ResultRow { title, folder, reason: String::new(), action: Action::Clipboard(c) })
                     .collect();
                 let _ = tx.send(Reply { generation: g, rows, append: false, status });
             });
@@ -908,6 +928,13 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 }
                 return;
             }
+            Action::Clipboard(c) => {
+                pane.card(&icon, &result.title, &result.folder, false);
+                for (key, value) in c.details() {
+                    pane.add_detail(&key, &value);
+                }
+                return;
+            }
             Action::File(path, _) => {
                 // Until the preview arrives, a dim icon holds the frame so it doesn't flash.
                 pane.card(&icon, "", "", true);
@@ -971,6 +998,10 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
         if let Some(result) = rows_activate.borrow().get(row.index() as usize) {
             if let Action::Password(p) = &result.action {
                 pw::activate(p, None, &win_activate, &footer_activate);
+                return;
+            }
+            if let Action::Clipboard(c) = &result.action {
+                cb::activate(c, cb::How::Paste, &win_activate, &footer_activate);
                 return;
             }
             activate(result, &win_activate, &footer_activate, &armed_activate, false);
@@ -1079,6 +1110,18 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                         pw::activate(p, verb, &win_keys, &footer_keys);
                         return glib::Propagation::Stop;
                     }
+                    if let Action::Clipboard(c) = &result.action {
+                        // Ctrl+Enter pastes plain text, Alt+Enter only copies.
+                        let how = if mods.contains(gdk::ModifierType::CONTROL_MASK) {
+                            cb::How::PastePlain
+                        } else if mods.contains(gdk::ModifierType::ALT_MASK) {
+                            cb::How::Copy
+                        } else {
+                            cb::How::Paste
+                        };
+                        cb::activate(c, how, &win_keys, &footer_keys);
+                        return glib::Propagation::Stop;
+                    }
                     activate(result, &win_keys, &footer_keys, &armed, mods.contains(gdk::ModifierType::CONTROL_MASK));
                 }
             }
@@ -1098,6 +1141,10 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 // A vault row copies its username through the daemon, never its title.
                 if let Action::Password(p) = &result.action {
                     pw::activate(p, Some(passwords::Verb::Username), &win_keys, &footer_keys);
+                    return glib::Propagation::Stop;
+                }
+                if let Action::Clipboard(c) = &result.action {
+                    cb::activate(c, cb::How::Copy, &win_keys, &footer_keys);
                     return glib::Propagation::Stop;
                 }
                 let text = match &result.action {
@@ -1452,6 +1499,7 @@ fn set_hints(hints: &gtk::Box, action: Option<&Action>) {
         Some(Action::System(_)) | Some(Action::Command(_)) => vec![(enter, "Run")],
         Some(Action::Plugin(..)) => vec![(enter, "Open")],
         Some(Action::Password(p)) => p.hints(),
+        Some(Action::Clipboard(c)) => c.hints(),
         None => vec![],
     };
     for (keys, label) in list {
@@ -1478,6 +1526,7 @@ fn symbolic_icon(action: &Action) -> &'static str {
         Action::Command(_) => "system-run-symbolic",
         Action::Plugin(..) => "application-x-addon-symbolic",
         Action::Password(p) => p.icon(),
+        Action::Clipboard(c) => c.icon(),
     }
 }
 /// Apps show their own icon; files the symbolic icon for their type.
@@ -1926,7 +1975,7 @@ fn activate(
                 }
             }
             // Routed to `pw::activate` before this; nothing to do here.
-            Action::Password(_) | Action::Command(_) => {}
+            Action::Password(_) | Action::Clipboard(_) | Action::Command(_) => {}
         }
         Ok(())
     })();
@@ -2962,6 +3011,7 @@ enum PanelVerb {
     SaveAlias,
     Desktop(String),
     Password(passwords::Verb),
+    Clipboard(cb::How),
     Plugin(String),
     History(String),
 }
@@ -3161,6 +3211,20 @@ impl ActionPanel {
                     items.push(PanelItem { title: "Open in Passwords".into(), verb: PanelVerb::Open });
                 }
             }
+            Action::Clipboard(c) => {
+                items.clear();
+                if let cb::Cb::Entry { kind, pinned, .. } = c {
+                    items.push(PanelItem { title: "Paste".into(), verb: PanelVerb::Clipboard(cb::How::Paste) });
+                    if kind != "image" {
+                        items.push(PanelItem { title: "Paste as plain text".into(), verb: PanelVerb::Clipboard(cb::How::PastePlain) });
+                    }
+                    items.push(PanelItem { title: "Copy".into(), verb: PanelVerb::Clipboard(cb::How::Copy) });
+                    let pin = if *pinned { "Unpin" } else { "Pin" };
+                    items.push(PanelItem { title: pin.into(), verb: PanelVerb::Clipboard(cb::How::Pin) });
+                    items.push(PanelItem { title: "Delete".into(), verb: PanelVerb::Clipboard(cb::How::Delete) });
+                    items.push(PanelItem { title: "More actions in Clipboard".into(), verb: PanelVerb::Clipboard(cb::How::Open) });
+                }
+            }
             Action::Command(providers::Target::Service(_)) => {
                 items[0].title = "View status".into();
             }
@@ -3265,7 +3329,7 @@ impl ActionPanel {
         }
         if matches!(item.verb, PanelVerb::Details) {
             self.entry.set_text("");
-            let detail = if matches!(result.action, Action::Password(_)) {
+            let detail = if matches!(result.action, Action::Password(_) | Action::Clipboard(_)) {
                 format!("{}\n{}", result.title, result.folder)
             } else {
                 format!("{}\n{}\n{}", result.title, result.folder, result.identity())
@@ -3281,6 +3345,8 @@ impl ActionPanel {
                 PanelVerb::Open => {
                     if let Action::Password(p) = &result.action {
                         pw::activate(p, None, window, status);
+                    } else if let Action::Clipboard(c) = &result.action {
+                        cb::activate(c, cb::How::Paste, window, status);
                     } else {
                         activate(&result, window, status, armed, false);
                     }
@@ -3318,6 +3384,11 @@ impl ActionPanel {
                 PanelVerb::Password(verb) => {
                     if let Action::Password(p) = &result.action {
                         pw::activate(p, Some(verb), window, status);
+                    }
+                }
+                PanelVerb::Clipboard(how) => {
+                    if let Action::Clipboard(c) = &result.action {
+                        cb::activate(c, how, window, status);
                     }
                 }
                 PanelVerb::Plugin(action_id) => {

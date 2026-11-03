@@ -97,6 +97,7 @@ pub fn record(p: &Paths, id: &str, query: &str) -> Result<()> {
     if !p.load()?.learning
         || !eligible_id(id)
         || passwords::parse(query).is_some()
+        || crate::clipboard::parse(query).is_some()
         || utility::intent(query) != utility::Intent::Search
         || query.trim().is_empty()
         || query.len() > 256

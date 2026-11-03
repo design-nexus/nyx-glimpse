@@ -152,13 +152,13 @@ pub fn validate(c: &Config) -> Result<()> {
     if c.alias_queries.len() > 1000
         || c.alias_queries
             .iter()
-            .any(|(id, q)| !crate::learning::eligible_id(id) || q.len() > 256 || crate::passwords::parse(q).is_some())
+            .any(|(id, q)| !crate::learning::eligible_id(id) || q.len() > 256 || crate::passwords::parse(q).is_some() || crate::clipboard::parse(q).is_some())
     {
         bail!("Invalid alias queries");
     }
     if c.favorites.len() > 1000
         || c.aliases.len() > 1000
-        || c.aliases.values().any(|a| a.trim().is_empty() || a.len() > 128 || crate::passwords::parse(a).is_some())
+        || c.aliases.values().any(|a| a.trim().is_empty() || a.len() > 128 || crate::passwords::parse(a).is_some() || crate::clipboard::parse(a).is_some())
         || c.aliases.keys().chain(c.favorites.iter()).any(|id| !crate::learning::eligible_id(id))
     {
         bail!("Invalid favorites or aliases");
