@@ -202,6 +202,15 @@ fn status_error(label: &gtk::Label, e: impl std::fmt::Display) {
     label.set_text(&e.to_string());
 }
 thread_local! {static SEARCH:RefCell<Option<gtk::SearchEntry>>=const{RefCell::new(None)};}
+
+/// Runs the search in the box again, as typing would (the vault just opened under a `pw`
+/// query).
+pub fn rerun_search() {
+    let entry = SEARCH.with(|s| s.borrow().clone());
+    if let Some(entry) = entry {
+        entry.emit_by_name::<()>("search-changed", &[]);
+    }
+}
 pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
     let _ = nyx_glimpse::ai_setup::resume(&Paths::discover());
     if let Some(win) = PANEL.with(|p| p.borrow().clone()) {

@@ -22,6 +22,8 @@ pub enum Pw {
     Aliases,
     /// The vault is locked: Enter opens Passwords on its unlock page.
     Unlock,
+    /// The vault is locked and Nyx Biometrics can open it: Enter asks for the face.
+    FaceUnlock,
     /// No account yet: Enter opens Passwords to sign in.
     SignIn,
     /// Passwords isn't installed or its service won't start.
@@ -47,7 +49,7 @@ impl Pw {
             },
             Pw::Generate => "media-playlist-shuffle-symbolic",
             Pw::Aliases => "mail-send-symbolic",
-            Pw::Lock | Pw::Unlock => "system-lock-screen-symbolic",
+            Pw::Lock | Pw::Unlock | Pw::FaceUnlock => "system-lock-screen-symbolic",
             Pw::SignIn => "dialog-password-symbolic",
             Pw::Unavailable => "dialog-warning-symbolic",
             Pw::Help => "system-search-symbolic",
@@ -73,6 +75,7 @@ impl Pw {
             Pw::Lock => vec![(&["Enter"][..], "Lock")],
             Pw::Aliases => vec![(&["Enter"][..], "Open in Passwords")],
             Pw::Unlock => vec![(&["Enter"][..], "Unlock in Passwords")],
+            Pw::FaceUnlock => vec![(&["Enter"][..], "Unlock with your face")],
             Pw::SignIn => vec![(&["Enter"][..], "Open Passwords")],
             Pw::Unavailable | Pw::Help => vec![],
         }
@@ -117,6 +120,16 @@ fn kind_name(kind: &str) -> &'static str {
 /// One row: title, second line, what it is.
 pub type Row = (String, String, Pw);
 
+/// "Vault locked", opened with the face where Passwords has that set up.
+async fn locked_row() -> Row {
+    let face = client::call("FaceUnlock", None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
+    if face {
+        ("Vault locked".into(), "Enter to unlock with your face".into(), Pw::FaceUnlock)
+    } else {
+        ("Vault locked".into(), "Enter to unlock it in Passwords".into(), Pw::Unlock)
+    }
+}
+
 /// The rows for a `pw` query, and a status message when there's something to say.
 pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
     let st = match client::status().await {
@@ -133,7 +146,7 @@ pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
         let rows = match q.special {
             // Already locked: nothing to do, but say so rather than offering to unlock.
             Some(Special::Lock) => return (vec![], "The vault is already locked".into()),
-            _ => vec![("Vault locked".into(), "Enter to unlock it in Passwords".into(), Pw::Unlock)],
+            _ => vec![locked_row().await],
         };
         return (rows, String::new());
     }
@@ -162,7 +175,7 @@ pub async fn lookup(q: &Query) -> (Vec<Row>, String) {
         }
         Err(e) if e.is(Code::Denied) => return (rows, "Glimpse is turned off in Passwords' settings".into()),
         Err(e) if e.is(Code::Locked) => {
-            return (vec![("Vault locked".into(), "Enter to unlock it in Passwords".into(), Pw::Unlock)], String::new());
+            return (vec![locked_row().await], String::new());
         }
         Err(e) => return (rows, e.to_string()),
     }
@@ -218,6 +231,25 @@ pub fn activate(pw: &Pw, verb: Option<Verb>, window: &gtk::ApplicationWindow, st
                 .spawn()
                 .map(|_| ())
                 .map_err(|_| "Couldn't open Passwords".to_string()),
+            // The window has stepped aside for the system prompt by now; once the vault is
+            // open it comes back with the same search. Anything but a cancel goes on in
+            // Passwords' own unlock page.
+            Pw::FaceUnlock => match client::call("UnlockWithFace", None).await {
+                Ok(_) => {
+                    pending.set(false);
+                    window.present();
+                    crate::ui::rerun_search();
+                    return;
+                }
+                Err(e) if e.to_string().contains("not confirmed") => {
+                    Err("Not confirmed. Enter to try again, or unlock in Passwords".to_string())
+                }
+                Err(_) => std::process::Command::new("nyx-passwords")
+                    .arg("--unlock")
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|_| "Couldn't open Passwords".to_string()),
+            },
             Pw::Unlock | Pw::SignIn => std::process::Command::new("nyx-passwords")
                 .arg("--unlock")
                 .spawn()
