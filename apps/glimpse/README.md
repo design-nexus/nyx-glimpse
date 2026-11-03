@@ -69,6 +69,15 @@ Ctrl+O opens the site. Passwords are never shown in Glimpse, and the copy is cle
 from the clipboard after Passwords' set time. A locked vault offers to unlock in
 Passwords. Turn this off in Passwords' settings.
 
+## Clipboard
+
+With [Clipboard](https://github.com/design-nexus/nyx-clipboard) installed, a query
+starting with `cb` (or `clip`) searches what you copied and nothing else; it is never
+learned. `cb` alone lists the newest; Clipboard's kind prefixes work after it
+(`cb img:`, `cb url: github`). Enter pastes into the window you were in, Ctrl+Enter
+pastes plain text, Alt+Enter (or Ctrl+C) only copies; the actions panel pins, deletes
+or opens Clipboard. Verification codes never show here.
+
 ## Plugins
 
 Open Plugins from the panel or Settings. Browse includes the bundled Quick Tools
