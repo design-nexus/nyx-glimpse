@@ -1951,7 +1951,7 @@ fn activate(
                     status.set_text("Press Enter again to confirm");
                     return Ok(());
                 }
-                Command::new("omarchy").args(["system", cmd]).spawn()?;
+                system_command(cmd).spawn()?;
                 *armed.borrow_mut() = None;
             }
             Action::Plugin(id, _, action) => {
@@ -3539,4 +3539,23 @@ mod workflow_ui_tests {
         );
         window.destroy();
     }
+}
+
+/// Omarchy's system command, or the session's own tools where Omarchy isn't installed.
+fn system_command(cmd: &str) -> Command {
+    if plugins::on_path("omarchy") {
+        let mut c = Command::new("omarchy");
+        c.args(["system", cmd]);
+        return c;
+    }
+    let argv: &[&str] = match cmd {
+        "lock" => &["loginctl", "lock-session"],
+        "logout" if plugins::on_path("uwsm") => &["uwsm", "stop"],
+        "logout" => &["hyprctl", "dispatch", "exit"],
+        "reboot" => &["systemctl", "reboot"],
+        _ => &["systemctl", "poweroff"],
+    };
+    let mut c = Command::new(argv[0]);
+    c.args(&argv[1..]);
+    c
 }
