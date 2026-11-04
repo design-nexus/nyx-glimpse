@@ -105,8 +105,15 @@ pub fn apply(paths: &Paths, shortcuts: Option<bool>) -> Result<()> {
     }
     apply_at(paths, &file, shortcuts, true)
 }
+/// Where distributions install user units; one there takes the place of the unit
+/// Glimpse writes for itself.
+const PACKAGED_UNITS: [&str; 2] = ["/usr/lib/systemd/user", "/etc/systemd/user"];
 fn service_unit(paths: &Paths) -> Result<()> {
     let folder = paths.config.parent().context("XDG config parent")?.join("systemd/user");
+    let own = folder.join("nyx-glimpsed.service");
+    if !own.exists() && PACKAGED_UNITS.iter().any(|dir| Path::new(dir).join("nyx-glimpsed.service").exists()) {
+        return Ok(());
+    }
     fs::create_dir_all(&folder)?;
     let bin = std::env::current_exe()?.parent().context("binary directory")?.join("nyx-glimpsed");
     if !bin.exists() {
@@ -116,7 +123,7 @@ fn service_unit(paths: &Paths) -> Result<()> {
     let unit = format!(
         "[Unit]\nDescription=Glimpse local search index\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nExecStart=\"{escaped}\"\nRestart=on-failure\nUMask=0077\nNice=10\n\n[Install]\nWantedBy=default.target\n"
     );
-    fs::write(folder.join("nyx-glimpsed.service"), unit)?;
+    fs::write(own, unit)?;
     let mut c = Command::new("systemctl");
     c.args(["--user", "daemon-reload"]);
     process::capture(c, vec![], Duration::from_secs(10), 65536)?;

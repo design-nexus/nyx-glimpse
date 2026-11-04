@@ -353,6 +353,20 @@ pub fn rollback(p: &Paths, id: &str) -> Result<()> {
 pub fn on_path(s: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(s).is_file()))
 }
+/// NixOS keeps programs and their libraries in /nix/store, reached through the system
+/// profile. Mounted read-only where they exist.
+const NIX_ROOTS: [&str; 2] = ["/nix/store", "/run/current-system"];
+/// Where the system's own programs live, in the order they're looked for.
+const SYSTEM_BIN: [&str; 2] = ["/usr/bin", "/run/current-system/sw/bin"];
+fn bind_system_roots(cmd: &mut Command) {
+    for root in NIX_ROOTS.into_iter().filter(|r| Path::new(r).exists()) {
+        cmd.args(["--ro-bind", root, root]);
+    }
+}
+fn system_program(name: &str) -> String {
+    let found = SYSTEM_BIN.iter().map(|dir| Path::new(dir).join(name)).find(|p| p.is_file());
+    found.unwrap_or_else(|| Path::new(SYSTEM_BIN[0]).join(name)).display().to_string()
+}
 pub fn sandbox_probe() -> Result<()> {
     let mut c = Command::new("bwrap");
     c.args([
@@ -371,9 +385,9 @@ pub fn sandbox_probe() -> Result<()> {
         "/proc",
         "--dev",
         "/dev",
-        "--",
-        "/usr/bin/true",
     ]);
+    bind_system_roots(&mut c);
+    c.arg("--").arg(system_program("true"));
     process::capture(c, vec![], Duration::from_secs(3), 1024).context("OS sandbox unavailable; plugins remain disabled")?;
     Ok(())
 }
@@ -450,6 +464,7 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
         "--ro-bind",
     ]);
     cmd.arg(&plugin.dir).arg("/plugin").args(["--bind"]).arg(storage).arg("/storage");
+    bind_system_roots(&mut cmd);
     if plugin.grant.permissions.network {
         cmd.arg("--share-net");
         if Path::new("/etc/resolv.conf").exists() {
@@ -489,7 +504,7 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
         "--clearenv",
         "--setenv",
         "PATH",
-        "/usr/bin:/bin",
+        "/usr/bin:/bin:/run/current-system/sw/bin",
         "--setenv",
         "HOME",
         "/storage",
@@ -514,7 +529,7 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
     let exe = if executable.contains('/') {
         format!("/plugin/{}", executable.trim_start_matches("./"))
     } else {
-        format!("/usr/bin/{executable}")
+        system_program(executable)
     };
     cmd.arg(exe).args(&plugin.manifest.exec[1..]);
     // Hide default secrets/generated paths and explicit exclusions even inside granted folders.
