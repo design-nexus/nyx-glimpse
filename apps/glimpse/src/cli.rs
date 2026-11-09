@@ -82,15 +82,15 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
         }
         "models" => match arg(a, 1)? {
             "status" => println!("{}", semantic::status(&p)),
-            "download" => semantic::download(&p, a.iter().any(|s| s == "--text-only"))?,
-            "setup" => {
-                let script = runtime_script()?;
-                let mut cmd = Command::new("bash");
-                cmd.arg(script);
-                let status = cmd.status()?;
-                if !status.success() {
-                    bail!("semantic runtime setup failed");
-                }
+            // Both make EmbeddingGemma 2 available in Nyx AI Core (from Glimpse's own
+            // folder when it has the files).
+            "setup" | "download" => {
+                let id = crate::aicore::Core::new()?.prepare(&p, &|| false, &|done, total| {
+                    if let Some(percent) = (done * 100).checked_div(total) {
+                        eprint!("\r{percent}%");
+                    }
+                })?;
+                println!("{id}");
             }
             _ => bail!("unknown model operation"),
         },
@@ -180,23 +180,6 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
         _ => bail!("unknown command; use --help"),
     };
     Ok(true)
-}
-pub(crate) fn runtime_script() -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe()?;
-    let share = Paths::discover().data.join("scripts/setup-runtime.sh");
-    if share.exists() {
-        return Ok(share);
-    }
-    let dev = exe
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .context("runtime setup script missing")?
-        .join("apps/glimpse/scripts/setup-runtime.sh");
-    if !dev.exists() {
-        bail!("runtime setup script missing");
-    }
-    Ok(dev)
 }
 pub fn clear_semantic(p: &Paths) -> Result<()> {
     // Stop only this installation's daemon and preserve its login startup preference.

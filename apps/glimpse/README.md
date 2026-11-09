@@ -31,19 +31,33 @@ at login through a user service.
 
 ## Local AI
 
-The crawler, extraction, SQLite index, ranking, and Rust/C++ inference wrapper are
-Glimpse code. No Recall production code is included. The optional inference helper
-uses a pinned, unmodified llama.cpp library and verified EmbeddingGemma 2 GGUF models.
+The crawler, extraction, SQLite index and ranking are Glimpse code. No Recall
+production code is included. Embeddings come from [Nyx AI Core](https://github.com/design-nexus/nyx-ai),
+the suite's shared model runtime: Glimpse names its model (EmbeddingGemma 2 Q8_0 with
+its projector), and AI Core loads it and schedules the work beside every other app's.
+Glimpse has no llama.cpp of its own.
 
 ```sh
-nyx-glimpse models setup       # explicit build; no model download
-nyx-glimpse models download    # explicit 865 MB download and checksum verification
+nyx-glimpse models setup       # make EmbeddingGemma 2 available in Nyx AI Core
+nyx-glimpse models status      # AI Core, the model Glimpse uses, rebuild state
 ```
 
-For ordinary use, simply enable Local AI in Settings → Desktop → Glimpse. It prepares the engine and downloads the package automatically; the commands above remain available for manual maintenance. CPU is supported by
-all runtime builds. Build optional backends with `GLIMPSE_BACKENDS="cpu cuda"` or
-`"cpu vulkan"`; `GLIMPSE_BUILD_JOBS` limits compilation (default 4, maximum 16).
-Automatic device selection falls back to CPU; short queries use the CPU encoder.
+For ordinary use, simply enable Local AI in Settings → Desktop → Glimpse. If
+`~/.local/share/nyx-glimpse/Models` already has the model and projector (from earlier
+Glimpse versions), AI Core lists that folder and nothing downloads; otherwise AI Core
+downloads the model once (about 865 MB). Indexing runs at background priority, queries
+at interactive priority.
+
+The index records the identity AI Core reports for its vectors (model file, revision,
+projector and the settings that change vectors). Indexes built by Glimpse's own
+runtime stay valid: AI Core's EmbeddingGemma 2 gives the same vectors. When the model
+changes, the old index keeps answering word matches while a new one is built beside
+it, and it replaces the old one once every file is in it; vectors from two models
+never mix.
+
+Without Nyx AI Core (not installed, stopped, restarting), applications, file names,
+utilities and word matches in file contents all keep working; only matches by meaning
+pause, and the status line says why.
 
 Poppler is needed for PDFs; ffmpeg/ffprobe for media; unzip for Office XML formats.
 Tesseract OCR is optional. Missing readers are recorded as indexing errors and do
@@ -141,7 +155,7 @@ cargo clippy -p nyx-glimpse -p glimpse-plugin-sdk --all-targets -- -D warnings
 cargo test -p nyx-glimpse --test semantic -- --ignored
 ```
 
-The last test requires the explicitly installed models/runtime and exercises real
+The last test needs Nyx AI Core with EmbeddingGemma 2 and runs real inference on
 text, PDF, image, audio, video, and source filtering. Performance targets remain
 unverified until measured; see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
@@ -162,10 +176,14 @@ through operators, parentheses, or an initial `=`; a bare number remains a searc
 Unit conversion accepts attached quantities and common unit names. `oz` means mass;
 `fl oz` means US fluid ounces. The launcher is 760 pixels wide.
 
-Local AI exposes one enable toggle and a setup status. Its approximately 865 MB package
-contains a text embedding model and its companion media encoder; these are managed as
-one feature. Turning it off cancels pending setup while preserving downloaded assets.
-Interrupted setup resumes when Glimpse next opens; failures expose Retry.
+Local AI exposes one enable toggle and a setup status. Turning it off cancels pending
+setup and leaves the model where it is. Interrupted setup resumes when Glimpse next
+opens; failures expose Retry.
+
+Glimpse uses the same shared actions as the Assistant, from Nyx AI Core's registry:
+actions Nyx apps offer that need no arguments appear as results (an action that asks
+first runs on a second Enter), and Glimpse offers `glimpse.search` (read-only file
+search) to them while AI Core runs.
 
 Appearance has only Follow Omarchy and a theme selector. Following Omarchy disables
 the selector while retaining its selected value. Theme preferences remain shared across

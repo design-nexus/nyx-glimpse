@@ -21,6 +21,14 @@ fn main() -> glib::ExitCode {
         }
         Ok(false) => {}
     }
+    // With Shell Core, the Quickshell interface is Glimpse's panel; the GTK one answers
+    // when it isn't running.
+    let only = |flag: &str| args.len() == 1 && args[0] == flag;
+    if (only("--toggle") && nyx_glimpse::backend::ask_interface("Toggle").is_ok())
+        || (only("--hide") && nyx_glimpse::backend::ask_interface("Hide").is_ok())
+    {
+        return glib::ExitCode::SUCCESS;
+    }
     if std::env::var_os("GSK_RENDERER").is_none() {
         unsafe {
             std::env::set_var("GSK_RENDERER", "ngl");

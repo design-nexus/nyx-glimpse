@@ -47,7 +47,7 @@ for a in "${apps[@]}"; do
     rm -f "$config/systemd/user/nyx-glimpsed.service"
     systemctl --user daemon-reload 2>/dev/null || true
     rm -rf "$share/nyx-settings/extensions/glimpse" "$share/settings/extensions/glimpse"
-    bins="nyx-glimpse nyx-glimpsed nyx-glimpse-settings"
+    bins="nyx-glimpse nyx-glimpsed nyx-glimpse-settings nyx-glimpse-backend"
   fi
   if [[ $a == passwords ]]; then
     # Stopping the service locks the vault and clears a copy it left on the clipboard.

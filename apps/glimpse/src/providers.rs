@@ -15,6 +15,8 @@ pub enum Target {
     Omarchy(String),
     Service(String),
     Plugin(String, String, plugins::Action),
+    /// An action a Nyx app offers through Nyx AI Core's shared registry.
+    Shared(String),
 }
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -309,5 +311,97 @@ impl Provider for Extensions {
                 target: Target::Plugin(id, hit.id, hit.action),
             })
             .collect())
+    }
+}
+
+/// Actions Nyx apps offer through Nyx AI Core's shared registry, the same ones the
+/// Assistant uses. Only actions that need no arguments are offered here; AI Core and
+/// the owning app check every call, and actions that ask first wait for a second Enter.
+#[derive(Default)]
+pub struct SharedActions {
+    cached: Option<(std::time::Instant, Vec<nyx_ai_client::proto::ActionInfo>)>,
+}
+impl SharedActions {
+    fn list(&mut self, cancelled: &dyn Fn() -> bool) -> Result<&[nyx_ai_client::proto::ActionInfo]> {
+        if self.cached.as_ref().is_none_or(|(at, _)| at.elapsed() > std::time::Duration::from_secs(30)) {
+            let core = crate::aicore::Core::new()?;
+            let actions = if core.available() { core.actions(cancelled)? } else { Vec::new() };
+            self.cached = Some((std::time::Instant::now(), actions));
+        }
+        Ok(&self.cached.as_ref().unwrap().1)
+    }
+}
+/// An action's first sentence, as a title.
+pub fn action_title(description: &str, id: &str) -> String {
+    let first = description.split(['.', ';', '(']).next().unwrap_or("").trim();
+    if first.is_empty() { id.to_string() } else { first.chars().take(70).collect() }
+}
+/// Whether an action can run from a search result: available, and no required arguments.
+pub fn runnable(action: &nyx_ai_client::proto::ActionInfo) -> bool {
+    action.available
+        && action.owner != "nyx-glimpse"
+        && action.spec.input_schema.get("required").and_then(|r| r.as_array()).is_none_or(|r| r.is_empty())
+}
+impl Provider for SharedActions {
+    fn id(&self) -> &str {
+        "actions"
+    }
+    fn discover(&mut self, ctx: &SearchContext<'_>) -> Result<Vec<Candidate>> {
+        if ctx.query.trim().chars().count() < 2 {
+            return Ok(vec![]);
+        }
+        Ok(self
+            .list(ctx.cancelled)?
+            .iter()
+            .filter(|a| runnable(a))
+            .map(|a| {
+                let app = a.spec.id.split('.').next().unwrap_or("");
+                Candidate {
+                    id: format!("action:{}", a.spec.id),
+                    title: action_title(&a.spec.description, &a.spec.id),
+                    subtitle: format!("{} action", capitalized(app)),
+                    keywords: format!("{} {} {}", app, a.spec.id.replace(['.', '_'], " "), a.spec.description),
+                    target: Target::Shared(a.spec.id.clone()),
+                }
+            })
+            .collect())
+    }
+}
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+/// What running a shared action gave, as one line for the status bar.
+pub fn summary(value: &serde_json::Value) -> String {
+    let text = match value {
+        serde_json::Value::Null => return String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(o) if o.len() == 1 && o.values().next().is_some_and(|v| v.is_string()) => {
+            o.values().next().and_then(|v| v.as_str()).unwrap_or_default().to_string()
+        }
+        other => other.to_string(),
+    };
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > 160 { format!("{}…", line.chars().take(159).collect::<String>()) } else { line }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+
+    fn action(id: &str, owner: &str, schema: serde_json::Value) -> nyx_ai_client::proto::ActionInfo {
+        serde_json::from_value(serde_json::json!({"id": id, "description": "What Theater is playing: title, position. More.",
+            "input_schema": schema, "owner": owner, "source": "dbus", "available": true}))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_actions_without_arguments_run_from_a_result() {
+        assert!(runnable(&action("theater.now_playing", "io.github.design_nexus.nyx.Theater", serde_json::json!({"type": "object"}))));
+        assert!(!runnable(&action("theater.play", "x", serde_json::json!({"type": "object", "required": ["id"]}))));
+        assert!(!runnable(&action("glimpse.search", "nyx-glimpse", serde_json::json!({"type": "object"}))));
+        assert_eq!(action_title("What Theater is playing: title, position. More.", "t.n"), "What Theater is playing: title, position");
+        assert_eq!(summary(&serde_json::json!({"text": "Paused at\n12:04"})), "Paused at 12:04");
+        assert_eq!(summary(&serde_json::Value::Null), "");
     }
 }

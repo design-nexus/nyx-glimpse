@@ -1,113 +1,46 @@
 use crate::{
+    aicore::{self, Core, Input},
     config::{self, Paths},
     process,
 };
 use anyhow::{Context, Result, bail};
+use nyx_ai_client::proto::Priority;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::PathBuf, process::Command, time::Duration};
-pub const REVISION: &str = "bfcd298762cc34d0357ece5ebdd31791a3a374d8";
-pub const MODELS: [(&str, u64, &str); 2] = [
-    ("embeddinggemma-2-Q8_0.gguf", 309855456, "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"),
-    ("mmproj-embeddinggemma-2-Q8_0.gguf", 554821024, "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f"),
-];
-pub fn runtime(p: &Paths) -> PathBuf {
-    p.data.join("runtime/bin/glimpse-embed")
-}
+
+/// For Settings and the command line: whether Nyx AI Core answers, the model
+/// Glimpse embeds with, and whether content search is on.
 pub fn status(p: &Paths) -> Value {
-    json!({"runtime":runtime(p).is_file(),"models":MODELS.iter().map(|(name,bytes,_)|json!({"name":name,"bytes":bytes,"present":p.data.join("Models").join(name).metadata().is_ok_and(|m|m.len()==*bytes)})).collect::<Vec<_>>(),"enabled":p.load().is_ok_and(|c|c.semantic)})
-}
-pub fn verify(path: &std::path::Path, bytes: u64, hash: &str) -> Result<()> {
-    let mut f = fs::File::open(path)?;
-    if f.metadata()?.len() != bytes {
-        bail!("model length mismatch");
-    }
-    let mut digest = Sha256::new();
-    let mut buf = vec![0; 8 * 1024 * 1024];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&buf[..n]);
-    }
-    if format!("{:x}", digest.finalize()) != hash {
-        bail!("model checksum mismatch");
-    }
-    Ok(())
-}
-pub fn download(p: &Paths, text_only: bool) -> Result<()> {
-    download_cancel(p, text_only, || false)
-}
-pub fn download_cancel(p: &Paths, text_only: bool, cancelled: impl Fn() -> bool) -> Result<()> {
-    p.ensure()?;
-    use std::os::fd::AsRawFd;
-    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(p.state.join("model-download.lock"))?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        bail!("model download already in progress");
-    }
-    let dir = p.data.join("Models");
-    config::private_dir(&dir)?;
-    for (name, bytes, hash) in MODELS.into_iter().take(if text_only { 1 } else { 2 }) {
-        if cancelled() {
-            bail!("operation cancelled");
-        }
-        let target = dir.join(name);
-        if target.exists() {
-            let stamp = model_stamp(p, name)?;
-            if fs::read_to_string(p.state.join("verified-models").join(name)).ok().as_deref() != Some(&stamp) {
-                verify(&target, bytes, hash)?;
-                record_verified(p, name)?;
-            }
-            continue;
-        }
-        let temp = dir.join(format!("{name}.partial"));
-        let url = format!("https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/{REVISION}/{name}");
-        let mut cmd = Command::new("curl");
-        cmd.args(["-fL", "--retry", "2", "--connect-timeout", "20", "--max-time", "1800", "--output"]).arg(&temp).arg(url);
-        let result = process::capture_cancel(cmd, vec![], Duration::from_secs(1810), 65536, &cancelled)
-            .and_then(|_| verify(&temp, bytes, hash));
-        if let Err(e) = result {
-            let _ = fs::remove_file(temp);
-            return Err(e);
-        }
-        fs::rename(temp, target)?;
-        record_verified(p, name)?;
-    }
-    Ok(())
-}
-fn model_stamp(p: &Paths, name: &str) -> Result<String> {
-    let metadata = p.data.join("Models").join(name).metadata()?;
-    Ok(format!("{}:{}", metadata.len(), metadata.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_nanos()))
-}
-fn record_verified(p: &Paths, name: &str) -> Result<()> {
-    config::atomic_write(&p.state.join("verified-models").join(name), model_stamp(p, name)?.as_bytes())
-}
-fn ensure_models(p: &Paths, text_only: bool) -> Result<()> {
-    for (name, bytes, hash) in MODELS.into_iter().take(if text_only { 1 } else { 2 }) {
-        let stamp = model_stamp(p, name).context("models unavailable; use Glimpse Settings to download them")?;
-        if fs::read_to_string(p.state.join("verified-models").join(name)).ok().as_deref() != Some(&stamp) {
-            verify(&p.data.join("Models").join(name), bytes, hash)?;
-            record_verified(p, name)?;
-        }
-    }
-    Ok(())
-}
-fn command(p: &Paths) -> Result<Command> {
-    if !runtime(p).is_file() {
-        bail!("semantic runtime unavailable; run nyx-glimpse models setup");
-    }
-    let mut c = Command::new(runtime(p));
-    c.env("GLIMPSE_MODELS", p.data.join("Models")).env("GLIMPSE_GGML_DIR", p.data.join("runtime/lib"));
-    Ok(c)
+    let mut s = aicore::status(p);
+    s["enabled"] = p.load().is_ok_and(|c| c.semantic).into();
+    s["rebuilding"] = next_index(p).exists().into();
+    s
 }
 
-pub const IDENTITY: &str = "glimpse-embeddinggemma2-q8-v1";
+/// The index searches use.
+fn live_index(p: &Paths) -> PathBuf {
+    p.data.join("semantic-index/glimpse.sqlite")
+}
+/// The index built beside the live one after the embedding model changed; it
+/// replaces the live one once every file is in it.
+fn next_index(p: &Paths) -> PathBuf {
+    p.data.join("semantic-index/glimpse.next.sqlite")
+}
+/// A search saw AI Core's model differ from the index's: the identity it saw, for
+/// the indexer to rebuild for even when no file has changed.
+fn model_changed(p: &Paths) -> PathBuf {
+    p.state.join("semantic-model-changed")
+}
+
+/// A query's vector, and the generic probes' vectors it's measured against.
+type QueryVectors = (Vec<f32>, Vec<Vec<f32>>);
 pub struct Session {
-    worker: Option<Worker>,
+    core: Option<Core>,
     last_use: std::time::Instant,
-    /// Generic queries' vectors per task (search, code), for measuring each item's hubness.
-    probes: std::collections::HashMap<bool, Vec<Vec<f32>>>,
+    /// Generic queries' vectors per task (search, code) and model, for measuring each item's hubness.
+    probes: std::collections::HashMap<(bool, String), Vec<Vec<f32>>>,
+    /// Why the last search matched contents by words only, if it did.
+    note: Option<String>,
 }
 /// Queries that ask for nothing in particular. An item that scores well against these
 /// scores well against everything (a near-blank image, a boilerplate page), so its
@@ -115,121 +48,8 @@ pub struct Session {
 /// They name no kind of file, so a query that asks for pictures or recordings isn't
 /// marked down for it.
 const PROBES: [&str; 8] = ["something", "anything", "information", "a file", "an item", "data", "stuff", "content"];
-struct Worker {
-    child: std::process::Child,
-    input: std::process::ChildStdin,
-    replies: std::sync::mpsc::Receiver<Result<Value>>,
-    next_id: u64,
-}
-impl Drop for Worker {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.child.wait();
-    }
-}
-impl Worker {
-    fn start(p: &Paths, text_only: bool) -> Result<Self> {
-        ensure_models(p, text_only)?;
-        let cfg = p.load()?;
-        let wanted = if text_only || cfg.device == "cpu" {
-            "cpu"
-        } else if cfg.device == "auto" {
-            if p.data.join("runtime/lib/libggml-cuda.so").exists() {
-                "cuda"
-            } else if p.data.join("runtime/lib/libggml-vulkan.so").exists() {
-                "vulkan"
-            } else {
-                "cpu"
-            }
-        } else {
-            &cfg.device
-        };
-        match Self::spawn(p, text_only, wanted) {
-            Ok(worker) => Ok(worker),
-            Err(_) if cfg.device == "auto" && wanted != "cpu" => Self::spawn(p, text_only, "cpu"),
-            Err(e) => Err(e),
-        }
-    }
-    fn spawn(p: &Paths, text_only: bool, device: &str) -> Result<Self> {
-        use std::{
-            io::{BufRead, BufReader},
-            os::unix::process::CommandExt,
-            process::Stdio,
-        };
-        let mut cmd = command(p)?;
-        cmd.env("GLIMPSE_DEVICE", device);
-        if text_only {
-            cmd.arg("--text-only");
-        }
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
-        let mut child = cmd.spawn()?;
-        let input = child.stdin.take().unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, replies) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(output);
-            loop {
-                let mut bytes = Vec::new();
-                match reader.by_ref().take(2 * 1024 * 1024 + 1).read_until(b'\n', &mut bytes) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) if n > 2 * 1024 * 1024 => {
-                        let _ = tx.send(Err(anyhow::anyhow!("inference output exceeded limit")));
-                        break;
-                    }
-                    Ok(_) => {
-                        if tx.send(serde_json::from_slice(&bytes).map_err(anyhow::Error::from)).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        let worker = Self { child, input, replies, next_id: 0 };
-        let ready = worker.replies.recv_timeout(Duration::from_secs(30)).context("inference startup timed out")??;
-        if ready["ready"] != true || ready["dim"] != 768 || ready["identity"] != IDENTITY {
-            bail!("inference unavailable or incompatible: {}", ready["error"]);
-        }
-        Ok(worker)
-    }
-    fn embed(&mut self, op: &str, input: &str, cancelled: &impl Fn() -> bool) -> Result<Vec<f32>> {
-        use std::io::Write;
-        self.next_id += 1;
-        let id = self.next_id;
-        let request = json!({"id":id,"op":op,"inputs":[input]});
-        serde_json::to_writer(&mut self.input, &request)?;
-        self.input.write_all(b"\n")?;
-        self.input.flush()?;
-        let start = std::time::Instant::now();
-        loop {
-            if cancelled() {
-                bail!("inference cancelled");
-            }
-            if start.elapsed() > Duration::from_secs(30) {
-                bail!("inference timed out");
-            }
-            match self.replies.recv_timeout(Duration::from_millis(25)) {
-                Ok(v) => {
-                    let v = v?;
-                    if v["id"] != id {
-                        continue;
-                    }
-                    if let Some(e) = v.get("error") {
-                        bail!("inference: {e}");
-                    }
-                    let vector: Vec<f32> = serde_json::from_value(v["vectors"][0].clone())?;
-                    validate_vector(&vector)?;
-                    return Ok(vector);
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("inference worker exited"),
-                Err(_) => {}
-            }
-        }
-    }
-}
 pub fn validate_vector(vector: &[f32]) -> Result<()> {
-    if vector.len() != 768 || vector.iter().any(|n| !n.is_finite()) {
+    if vector.len() != aicore::DIMENSIONS || vector.iter().any(|n| !n.is_finite()) {
         bail!("invalid embedding shape or values");
     }
     let norm: f32 = vector.iter().map(|n| n * n).sum();
@@ -239,30 +59,35 @@ pub fn validate_vector(vector: &[f32]) -> Result<()> {
     Ok(())
 }
 fn database(p: &Paths) -> Result<rusqlite::Connection> {
+    open_index(p, &live_index(p))
+}
+fn open_index(p: &Paths, file: &std::path::Path) -> Result<rusqlite::Connection> {
     use std::os::unix::fs::PermissionsExt;
     p.ensure()?;
     let dir = p.data.join("semantic-index");
     config::private_dir(&dir)?;
-    let file = dir.join("glimpse.sqlite");
     if file.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
         bail!("semantic index is a symlink");
     }
-    let db = rusqlite::Connection::open(&file)?;
-    fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;
+    let db = rusqlite::Connection::open(file)?;
+    fs::set_permissions(file, fs::Permissions::from_mode(0o600))?;
     db.busy_timeout(Duration::from_secs(3))?;
     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA recursive_triggers=ON; CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE IF NOT EXISTS documents(path TEXT PRIMARY KEY,stamp TEXT NOT NULL,status TEXT NOT NULL,cursor INTEGER NOT NULL DEFAULT 0,error TEXT); CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY,path TEXT NOT NULL,ordinal INTEGER NOT NULL,kind TEXT NOT NULL,loc REAL,text TEXT NOT NULL,vector BLOB NOT NULL,code INTEGER NOT NULL DEFAULT 0,reader TEXT, UNIQUE(path,ordinal)); CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text); CREATE TRIGGER IF NOT EXISTS segment_add AFTER INSERT ON segments BEGIN INSERT INTO words(rowid,text) VALUES(new.id,new.text); END; CREATE TRIGGER IF NOT EXISTS segment_del AFTER DELETE ON segments BEGIN DELETE FROM words WHERE rowid=old.id; END;")?;
-    let identity: Option<String> = db.query_row("SELECT value FROM meta WHERE key='identity'", [], |r| r.get(0)).ok();
-    if identity.as_deref() != Some(IDENTITY) {
-        db.execute_batch("DELETE FROM segments;DELETE FROM documents;")?;
-        db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('identity',?1)", [IDENTITY])?;
-    }
     Ok(db)
+}
+/// The model the index's vectors came from (`None` while it's empty).
+fn identity(db: &rusqlite::Connection) -> Option<String> {
+    db.query_row("SELECT value FROM meta WHERE key='identity'", [], |r| r.get(0)).ok()
+}
+fn set_identity(db: &rusqlite::Connection, identity: &str) -> Result<()> {
+    db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('identity',?1)", [identity])?;
+    Ok(())
 }
 fn pack(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|n| n.to_le_bytes()).collect()
 }
 fn unpack(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.len() != 768 * 4 {
+    if bytes.len() != aicore::DIMENSIONS * 4 {
         bail!("corrupt stored vector");
     }
     let v = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<_>>();
@@ -271,20 +96,73 @@ fn unpack(bytes: &[u8]) -> Result<Vec<f32>> {
 }
 impl Session {
     pub fn start(_p: &Paths) -> Result<Self> {
-        Ok(Self { worker: None, last_use: std::time::Instant::now(), probes: Default::default() })
+        Ok(Self { core: None, last_use: std::time::Instant::now(), probes: Default::default(), note: None })
     }
     pub fn release_idle(&mut self) {
         if self.last_use.elapsed() > Duration::from_secs(30) {
-            self.worker = None;
+            self.core = None;
         }
     }
+    /// Why the last search matched contents by words only (AI Core down, the index
+    /// being rebuilt for a new model), for the status line.
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+    /// The query's vector and the probes', when AI Core answers and its model is
+    /// the one the index was built with.
+    fn vectors(
+        &mut self,
+        p: &Paths,
+        db: &rusqlite::Connection,
+        code: bool,
+        query: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<QueryVectors>> {
+        let Some(stored) = identity(db) else { return Ok(None) };
+        let task = if code { "code retrieval" } else { "search result" };
+        let mut prompts = vec![format!("task: {task} | query: {query}")];
+        let cached = self.probes.keys().find(|(c, id)| *c == code && aicore::compatible(&stored, id)).cloned();
+        if cached.is_none() {
+            prompts.extend(PROBES.iter().map(|probe| format!("task: {task} | query: {probe}")));
+        }
+        if self.core.is_none() {
+            self.core = Some(Core::new()?);
+        }
+        let inputs: Vec<Input> = prompts.iter().map(|s| Input::Text(s)).collect();
+        let result = self.core.as_mut().unwrap().embed(p, &inputs, Priority::Interactive, cancelled, Duration::from_secs(30));
+        let (mut vectors, current) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                self.core = None;
+                return Err(e);
+            }
+        };
+        if !aicore::compatible(&stored, &current) {
+            if fs::read_to_string(model_changed(p)).ok().as_deref() != Some(current.as_str()) {
+                let _ = config::atomic_write(&model_changed(p), current.as_bytes());
+            }
+            return Ok(None);
+        }
+        for v in &vectors {
+            validate_vector(v)?;
+        }
+        let vector = vectors.remove(0);
+        let probes = match cached {
+            Some(key) => self.probes[&key].clone(),
+            None => {
+                self.probes.insert((code, current), vectors.clone());
+                vectors
+            }
+        };
+        Ok(Some((vector, probes)))
+    }
+    /// Files whose contents match `q`: by meaning through Nyx AI Core, and by the
+    /// words themselves, which needs no AI and keeps working when AI Core doesn't.
     pub fn search(&mut self, p: &Paths, q: &str, cancelled: impl Fn() -> bool) -> Result<Vec<Value>> {
         let cfg = p.load()?;
+        self.note = None;
         if !cfg.semantic || q.trim().is_empty() || cfg.roots.is_empty() {
             return Ok(vec![]);
-        }
-        if !runtime(p).exists() {
-            bail!("semantic runtime unavailable; set it up in Glimpse Settings");
         }
         let db = database(p)?;
         let count: i64 = db.query_row("SELECT count(*) FROM segments", [], |r| r.get(0))?;
@@ -292,35 +170,20 @@ impl Session {
             return Ok(vec![]);
         }
         self.release_idle();
-        if self.worker.is_none() {
-            self.worker = Some(Worker::start(p, true)?);
-        }
         let code = q.trim().starts_with("code:");
         let query = if code { q.trim()[5..].trim() } else { q.trim().strip_prefix("semantic:").unwrap_or(q.trim()).trim() };
-        let prompt = format!("task: {} | query: {query}", if code { "code retrieval" } else { "search result" });
-        let vector = match self.worker.as_mut().unwrap().embed("text", &prompt, &cancelled) {
-            Ok(v) => v,
+        let found = match self.vectors(p, &db, code, query, &cancelled) {
+            Ok(Some(v)) => Some(v),
+            Ok(None) => {
+                self.note = Some("Rebuilding the content index for a new model; contents match by words for now".into());
+                None
+            }
+            Err(_) if cancelled() => bail!("search cancelled"),
             Err(e) => {
-                self.worker = None;
-                return Err(e);
+                self.note = Some(format!("Contents match by words only: {}", aicore::explain(&e)));
+                None
             }
         };
-        if !self.probes.contains_key(&code) {
-            let task = if code { "code retrieval" } else { "search result" };
-            let mut vectors = Vec::new();
-            for probe in PROBES {
-                let prompt = format!("task: {task} | query: {probe}");
-                match self.worker.as_mut().unwrap().embed("text", &prompt, &cancelled) {
-                    Ok(v) => vectors.push(v),
-                    Err(e) => {
-                        self.worker = None;
-                        return Err(e);
-                    }
-                }
-            }
-            self.probes.insert(code, vectors);
-        }
-        let probes = &self.probes[&code];
         self.last_use = std::time::Instant::now();
         let active = crate::plugins::list(p)?;
         let permitted = |path: &str, reader: &Option<String>, is_code: bool| {
@@ -334,72 +197,72 @@ impl Session {
                     })
                 })
         };
-        let mut stmt = db.prepare("SELECT id,path,kind,loc,text,vector,code,reader FROM segments WHERE code=?1")?;
-        // Best segment per file by lift: its similarity to the query minus its similarity to
-        // queries for nothing in particular. Raw cosine favours "hubs" (tiny theme images,
-        // boilerplate pages) that sit close to every query and turned up for everything.
-        let mut best = std::collections::HashMap::<String, (f32, Value)>::new();
-        for row in stmt.query_map([code], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<f64>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
-                r.get::<_, bool>(6)?,
-                r.get::<_, Option<String>>(7)?,
-            ))
-        })? {
-            if cancelled() {
-                bail!("search cancelled");
-            }
-            let (id, path, kind, loc, text, bytes, is_code, reader) = row?;
-            if !permitted(&path, &reader, is_code) {
-                continue;
-            }
-            let stored = unpack(&bytes)?;
-            let dot = |q: &[f32]| q.iter().zip(&stored).map(|(a, b)| a * b).sum::<f32>();
-            let cosine = dot(&vector);
-            let baseline = probes.iter().map(|p| dot(p)).sum::<f32>() / probes.len() as f32;
-            let lift = cosine - baseline;
-            if best.get(&path).is_none_or(|(score, _)| lift > *score) {
-                let file_kind = match kind.as_str() {
-                    "page" | "page_image" => "pdf",
-                    "image" => "image",
-                    "audio" => "audio",
-                    "frame" => "video",
-                    _ => "doc",
-                };
-                best.insert(path.clone(),(lift,json!({"path":path,"kind":file_kind,"segment":kind,"loc":loc,"cosine":cosine,"lift":lift,"segment_id":id,"excerpt":text.chars().take(1000).collect::<String>(),"reader":reader})));
-            }
-        }
-        // Clear standouts only: on this model, related files lift 0.09–0.2 above the generic
-        // baseline while unrelated ones stay under about 0.07.
-        // Clear standouts only. On this model related files lift 0.09–0.2 above the generic
-        // baseline and unrelated ones stay under about 0.07. Sound matches text weakly, so a
-        // single result far ahead of every other (0.06 or more) also counts.
-        let mut ranked: Vec<_> = best.into_values().collect();
-        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let standout = match ranked.as_slice() {
-            [(top, _), (next, _), ..] => *top > 0. && top - next >= 0.06,
-            [(top, _)] => *top > 0.,
-            [] => false,
-        };
-        let mut semantic: Vec<_> = ranked
-            .into_iter()
-            .enumerate()
-            .filter(|(i, (lift, _))| *lift >= 0.09 || (*i == 0 && standout))
-            .map(|(_, hit)| hit)
-            .collect();
-        if let Some((top, _)) = semantic.first() {
-            let minimum = *top - 0.05;
-            semantic.retain(|(lift, _)| *lift >= minimum);
-        }
         let mut fused = std::collections::HashMap::<String, (f64, Value)>::new();
-        for (rank, (_, mut hit)) in semantic.into_iter().take(5).enumerate() {
-            hit["related"] = true.into();
-            fused.insert(hit["path"].as_str().unwrap().into(), (1. / (60. + rank as f64), hit));
+        if let Some((vector, probes)) = found {
+            let mut stmt = db.prepare("SELECT id,path,kind,loc,text,vector,code,reader FROM segments WHERE code=?1")?;
+            // Best segment per file by lift: its similarity to the query minus its similarity to
+            // queries for nothing in particular. Raw cosine favours "hubs" (tiny theme images,
+            // boilerplate pages) that sit close to every query and turned up for everything.
+            let mut best = std::collections::HashMap::<String, (f32, Value)>::new();
+            for row in stmt.query_map([code], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<f64>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Vec<u8>>(5)?,
+                    r.get::<_, bool>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            })? {
+                if cancelled() {
+                    bail!("search cancelled");
+                }
+                let (id, path, kind, loc, text, bytes, is_code, reader) = row?;
+                if !permitted(&path, &reader, is_code) {
+                    continue;
+                }
+                let stored = unpack(&bytes)?;
+                let dot = |q: &[f32]| q.iter().zip(&stored).map(|(a, b)| a * b).sum::<f32>();
+                let cosine = dot(&vector);
+                let baseline = probes.iter().map(|p| dot(p)).sum::<f32>() / probes.len() as f32;
+                let lift = cosine - baseline;
+                if best.get(&path).is_none_or(|(score, _)| lift > *score) {
+                    let file_kind = match kind.as_str() {
+                        "page" | "page_image" => "pdf",
+                        "image" => "image",
+                        "audio" => "audio",
+                        "frame" => "video",
+                        _ => "doc",
+                    };
+                    best.insert(path.clone(),(lift,json!({"path":path,"kind":file_kind,"segment":kind,"loc":loc,"cosine":cosine,"lift":lift,"segment_id":id,"excerpt":text.chars().take(1000).collect::<String>(),"reader":reader})));
+                }
+            }
+            // Clear standouts only. On this model related files lift 0.09–0.2 above the generic
+            // baseline and unrelated ones stay under about 0.07. Sound matches text weakly, so a
+            // single result far ahead of every other (0.06 or more) also counts.
+            let mut ranked: Vec<_> = best.into_values().collect();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let standout = match ranked.as_slice() {
+                [(top, _), (next, _), ..] => *top > 0. && top - next >= 0.06,
+                [(top, _)] => *top > 0.,
+                [] => false,
+            };
+            let mut semantic: Vec<_> = ranked
+                .into_iter()
+                .enumerate()
+                .filter(|(i, (lift, _))| *lift >= 0.09 || (*i == 0 && standout))
+                .map(|(_, hit)| hit)
+                .collect();
+            if let Some((top, _)) = semantic.first() {
+                let minimum = *top - 0.05;
+                semantic.retain(|(lift, _)| *lift >= minimum);
+            }
+            for (rank, (_, mut hit)) in semantic.into_iter().take(5).enumerate() {
+                hit["related"] = true.into();
+                fused.insert(hit["path"].as_str().unwrap().into(), (1. / (60. + rank as f64), hit));
+            }
         }
         // Words in a file's contents count only when they appear together, as typed, not
         // scattered across a 1,500-character chunk; prefixes are for names, not contents.
@@ -841,9 +704,17 @@ pub fn index(p: &Paths) -> Result<()> {
     index_scanned(p).map(|_| ())
 }
 /// Index contents of files the filename index already lists; the daemon scans first.
-/// Returns true when work is left over (time budget used up or files part-done), so the
-/// caller should run another pass soon.
+/// Returns true when work is left over (time budget used up, files part-done, a
+/// rebuild under way), so the caller should run another pass soon.
+///
+/// Vectors come from Nyx AI Core. When its model's identity no longer matches the
+/// index (another file, revision, projector or settings), the old index stays in use
+/// for word matches while a new one is built beside it; the new one replaces it once
+/// every file is in it, so vectors from two models never mix.
 pub fn index_scanned(p: &Paths) -> Result<bool> {
+    index_with(p, Core::new()?)
+}
+fn index_with(p: &Paths, mut core: Core) -> Result<bool> {
     use std::os::fd::AsRawFd;
     p.ensure()?;
     let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(p.state.join("semantic.lock"))?;
@@ -854,9 +725,19 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
     if !cfg.semantic || cfg.paused || cfg.roots.is_empty() {
         return Ok(false);
     }
+    if let Ok(seen) = fs::read_to_string(model_changed(p)) {
+        let _ = fs::remove_file(model_changed(p));
+        let building = if next_index(p).exists() { identity(&open_index(p, &next_index(p))?) } else { identity(&database(p)?) };
+        if building.is_some_and(|b| !aicore::compatible(&b, &seen)) {
+            return start_rebuild(p, &seen, next_index(p).exists());
+        }
+    }
+    let rebuilding = next_index(p).exists();
+    let mut db = if rebuilding { open_index(p, &next_index(p))? } else { database(p)? };
+    let mut expected = identity(&db);
     let mut out_of_time = false;
+    let mut finished = true;
     let source = crate::index::open(p)?;
-    let mut db = database(p)?;
     let documents: Vec<String> =
         db.prepare("SELECT path FROM documents")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     for path in documents {
@@ -870,7 +751,6 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
         .prepare("SELECT path,mtime,size FROM files ORDER BY path")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut worker: Option<Worker> = None;
     let started = std::time::Instant::now();
     let reader_version = crate::plugins::list(p)?
         .into_iter()
@@ -880,6 +760,8 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
         .join("|");
     let mut current = cfg.clone();
     let mut loaded = std::time::Instant::now();
+    // Set when AI Core's model differs from the index's: the identity to rebuild for.
+    let mut changed_to: Option<String> = None;
     for (path, mtime, size) in files {
         // Settings are re-read at most once a second, not once per file.
         if loaded.elapsed() >= Duration::from_secs(1) {
@@ -887,10 +769,12 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
             loaded = std::time::Instant::now();
         }
         if current.paused || !current.semantic || current.roots != cfg.roots || current.excluded != cfg.excluded {
+            finished = false;
             break;
         }
         if started.elapsed() > Duration::from_secs(300) {
             out_of_time = true;
+            finished = false;
             break;
         }
         let file = std::path::Path::new(&path);
@@ -914,24 +798,44 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
         let cancelled = process::throttled(Duration::from_millis(250), || {
             p.load().map_or(true, |c| c.paused || !c.semantic || !config::allowed(&c, file))
         });
-        // Only a worker failure restarts the model; a file that can't be read leaves it running.
-        let mut worker_fault = false;
+        // Only AI Core being down or busy stops the pass; a file that can't be read
+        // or embedded waits until it changes.
+        let mut core_fault = false;
         let result = (|| -> Result<(usize, bool)> {
             let (pieces, complete, code, next_cursor) = extract(p, file, &current, cursor)?;
             if pieces.is_empty() {
                 return Ok((next_cursor, complete));
             }
-            if worker.is_none() {
-                worker = Some(Worker::start(p, false).inspect_err(|_| worker_fault = true)?);
-            }
-            let mut ready = Vec::new();
-            for piece in pieces {
-                if cancelled() {
-                    bail!("indexing cancelled");
+            let inputs: Vec<Input> = pieces
+                .iter()
+                .map(|piece| match piece.op {
+                    "image" => Input::Image(std::path::Path::new(&piece.input)),
+                    "audio" => Input::Audio(std::path::Path::new(&piece.input)),
+                    _ => Input::Text(&piece.input),
+                })
+                .collect();
+            let (vectors, made_by) = core
+                .embed(p, &inputs, Priority::Background, &cancelled, Duration::from_secs(600))
+                .inspect_err(|e| core_fault = aicore::transient(e))?;
+            match &expected {
+                None => {
+                    set_identity(&db, &made_by)?;
+                    expected = Some(made_by);
                 }
-                let vector =
-                    worker.as_mut().unwrap().embed(piece.op, &piece.input, &cancelled).inspect_err(|_| worker_fault = true)?;
-                ready.push((piece, vector));
+                Some(stored) if aicore::compatible(stored, &made_by) => {
+                    // An index from Glimpse's own runtime takes AI Core's identical model's name.
+                    if *stored != made_by {
+                        set_identity(&db, &made_by)?;
+                        expected = Some(made_by);
+                    }
+                }
+                Some(_) => {
+                    changed_to = Some(made_by);
+                    bail!("the embedding model changed");
+                }
+            }
+            for v in &vectors {
+                validate_vector(v)?;
             }
             if cancelled() {
                 bail!("source changed");
@@ -941,9 +845,8 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
             if now != mtime as u64 || meta.len() != size as u64 {
                 bail!("file changed during extraction");
             }
-
             let tx = db.transaction()?;
-            for (piece, vector) in ready {
+            for (piece, vector) in pieces.into_iter().zip(vectors) {
                 tx.execute("INSERT OR REPLACE INTO segments(path,ordinal,kind,loc,text,vector,code,reader) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![path,piece.ordinal as i64,piece.kind,piece.loc,piece.text,pack(&vector),code,piece.reader])?;
             }
             tx.commit()?;
@@ -959,31 +862,75 @@ pub fn index_scanned(p: &Paths) -> Result<bool> {
             Err(e) => {
                 // Paused, switched off or source removed: leave the document for a later pass.
                 if cancelled() {
+                    finished = false;
                     break;
                 }
-                // A worker crash or timeout may pass; a file that can't be read waits until it changes.
-                let status = if worker_fault { "retry" } else { "error" };
-                if worker_fault {
-                    worker = None;
+                if let Some(new) = changed_to.take() {
+                    drop(db);
+                    return start_rebuild(p, &new, rebuilding);
+                }
+                if core_fault {
+                    write_status(p, json!({"event":"waiting","reason":aicore::explain(&e)}))?;
+                    finished = false;
+                    break;
                 }
                 db.execute(
                     "INSERT OR REPLACE INTO documents(path,stamp,status,cursor,error) VALUES(?1,?2,?3,?4,?5)",
-                    rusqlite::params![path, stamp, status, cursor as i64, e.to_string()],
+                    rusqlite::params![path, stamp, "error", cursor as i64, e.to_string()],
                 )?;
             }
         }
-        config::atomic_write(
-            &p.state.join("semantic-status.json"),
-            &serde_json::to_vec(
-                &json!({"event":"indexing","files":db.query_row("SELECT count(*) FROM documents WHERE status='done'",[],|r|r.get::<_,i64>(0))?,"errors":db.query_row("SELECT count(*) FROM documents WHERE status='error'",[],|r|r.get::<_,i64>(0))?}),
-            )?,
+        write_status(
+            p,
+            json!({"event":if rebuilding {"rebuilding"} else {"indexing"},"files":db.query_row("SELECT count(*) FROM documents WHERE status='done'",[],|r|r.get::<_,i64>(0))?,"errors":db.query_row("SELECT count(*) FROM documents WHERE status='error'",[],|r|r.get::<_,i64>(0))?}),
         )?;
     }
     if p.state.join("extract").exists() {
         fs::remove_dir_all(p.state.join("extract"))?;
     }
-    let partial: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE status='partial')", [], |r| r.get(0))?;
-    Ok(out_of_time || partial)
+    let partial: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE status IN ('partial','retry'))", [], |r| r.get(0))?;
+    if rebuilding && finished && !partial {
+        finish_rebuild(p, db)?;
+        return Ok(false);
+    }
+    Ok(out_of_time || partial || rebuilding)
+}
+
+fn write_status(p: &Paths, status: Value) -> Result<()> {
+    config::atomic_write(&p.state.join("semantic-status.json"), &serde_json::to_vec(&status)?)
+}
+
+/// AI Core's model is now `new`: build a fresh index for it beside the live one,
+/// unless `new` is what the live index already has (a change reverted mid-rebuild).
+fn start_rebuild(p: &Paths, new: &str, rebuilding: bool) -> Result<bool> {
+    let next = next_index(p);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", next.display()));
+    }
+    if rebuilding && identity(&database(p)?).is_some_and(|live| aicore::compatible(&live, new)) {
+        write_status(p, json!({"event":"indexing"}))?;
+        return Ok(true);
+    }
+    let db = open_index(p, &next)?;
+    set_identity(&db, new)?;
+    write_status(p, json!({"event":"rebuilding","files":0,"errors":0}))?;
+    Ok(true)
+}
+
+/// Every file is in the new index: it becomes the live one.
+fn finish_rebuild(p: &Paths, next: rusqlite::Connection) -> Result<()> {
+    next.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")?;
+    drop(next);
+    let live = live_index(p);
+    if let Ok(old) = rusqlite::Connection::open(&live) {
+        let _ = old.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
+    }
+    fs::rename(next_index(p), &live)?;
+    for suffix in ["-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", live.display()));
+        let _ = fs::remove_file(format!("{}{suffix}", next_index(p).display()));
+    }
+    write_status(p, json!({"event":"indexing","rebuilt":true}))
 }
 
 #[cfg(test)]
@@ -994,5 +941,59 @@ mod tests {
             super::strip_markup("<w:t>a &amp;lt; b &quot;c&apos; &#233;&#x41; &bogus; & x</w:t>"),
             " a &lt; b \"c' éA &bogus; & x "
         );
+    }
+
+    use super::*;
+    use crate::aicore::fake::{fake_core, identity as model_identity};
+
+    #[test]
+    fn old_indexes_stay_and_a_new_model_rebuilds_beside_them() {
+        let dir = tempfile::Builder::new().prefix("glimpse-test-").tempdir().unwrap();
+        let p = Paths { config: dir.path().join("config"), data: dir.path().join("data"), state: dir.path().join("state") };
+        p.ensure().unwrap();
+        let root = dir.path().join("files");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("notes.md"), "The contract renewal is due on November 3, before the deadline.").unwrap();
+        let c = config::Config { roots: vec![root], semantic: true, battery_pause: false, ..Default::default() };
+        p.save(&c).unwrap();
+        crate::index::scan(&p, &c).unwrap();
+        let core = |socket: &std::path::Path| Core::with_socket(socket).unwrap();
+        let socket = |name: &str, pooling: &str| {
+            let d = dir.path().join(name);
+            fs::create_dir(&d).unwrap();
+            fake_core(&d, model_identity(pooling))
+        };
+
+        // An index from Glimpse's own runtime takes AI Core's identical model as its own.
+        set_identity(&database(&p).unwrap(), aicore::LEGACY_IDENTITY).unwrap();
+        let same = socket("same", "mean");
+        assert!(!index_with(&p, core(&same)).unwrap());
+        let live = database(&p).unwrap();
+        let first = aicore::legacy_equivalent();
+        assert_eq!(identity(&live).as_deref(), Some(first.as_str()));
+        assert!(live.query_row("SELECT count(*) FROM segments", [], |r| r.get::<_, i64>(0)).unwrap() > 0);
+
+        // Another model: searches match contents by words and flag the change...
+        let other = socket("other", "cls");
+        let mut session = Session::start(&p).unwrap();
+        session.core = Some(core(&other));
+        let hits = session.search(&p, "contract renewal", || false).unwrap();
+        assert!(hits.iter().any(|h| h["path"].as_str().unwrap().ends_with("notes.md")), "{hits:?}");
+        assert!(session.note().unwrap().contains("Rebuilding"));
+        // ...and the indexer builds a new index beside the live one, which stays.
+        assert!(index_with(&p, core(&other)).unwrap());
+        assert!(next_index(&p).exists());
+        assert_eq!(identity(&database(&p).unwrap()).as_deref(), Some(first.as_str()));
+        assert!(!index_with(&p, core(&other)).unwrap(), "every file is in the new index, which takes over");
+        assert!(!next_index(&p).exists());
+        let second = aicore::identity_key(&model_identity("cls"));
+        assert_eq!(identity(&database(&p).unwrap()).as_deref(), Some(second.as_str()));
+
+        // AI Core gone: contents still match by words, and the status says why.
+        let mut session = Session::start(&p).unwrap();
+        session.core = Some(core(&dir.path().join("gone.sock")));
+        let hits = session.search(&p, "contract renewal", || false).unwrap();
+        assert!(hits.iter().any(|h| h["path"].as_str().unwrap().ends_with("notes.md")));
+        assert!(session.note().unwrap().contains("words only"));
     }
 }

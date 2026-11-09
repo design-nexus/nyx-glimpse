@@ -64,7 +64,7 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
     }
     sources.push(json!({"kind":"disclosure","key":"exclusions","title":"Excluded folders","desc":format!("{} exclusions",c.excluded.len()),"rows":excluded}));
     let mut ai = vec![
-        json!({"kind":"switch","key":"semantic","title":"Enable local AI","desc":"Search file contents and media locally. First use prepares the engine and downloads an approximately 865 MB package.","value":c.semantic_requested||c.semantic,"refresh":true}),
+        json!({"kind":"switch","key":"semantic","title":"Enable local AI","desc":"Search file contents and media by meaning with EmbeddingGemma 2 in Nyx AI Core, on this computer. If Glimpse doesn't already have the model, AI Core downloads it once (about 865 MB). Word matches in contents work without it.","value":c.semantic_requested||c.semantic,"refresh":true}),
         json!({"kind":"info","key":"ai-status","title":"Status","value":crate::ai_setup::status(p)}),
     ];
     if crate::ai_setup::failed(p) {
@@ -149,16 +149,14 @@ fn run_job(p: &Paths, op: &str) -> Result<()> {
         bail!("Could not lock background operation");
     }
     let args: &[&str] = match op {
-        "runtime" => &["models", "setup"],
-        "models" => &["models", "download"],
+        "runtime" | "models" => &["models", "setup"],
         "rescan" => &["index", "scan"],
         "purge" => &["index", "purge"],
         _ => bail!("unknown background operation"),
     };
     let file = p.state.join("settings-job.json");
     let message = match op {
-        "runtime" => "Setting up inference runtime…",
-        "models" => "Downloading and verifying models…",
+        "runtime" | "models" => "Making EmbeddingGemma 2 available in Nyx AI Core…",
         "rescan" => "Refreshing indexed folders…",
         _ => "Deleting search indexes…",
     };

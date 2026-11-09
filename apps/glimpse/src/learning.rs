@@ -17,7 +17,7 @@ pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
 }
 pub fn eligible_id(id: &str) -> bool {
-    id.len() <= 4096 && ["app:", "file:", "system:", "omarchy:", "service:", "plugin:"].iter().any(|p| id.starts_with(p))
+    id.len() <= 4096 && ["app:", "file:", "system:", "omarchy:", "service:", "plugin:", "action:"].iter().any(|p| id.starts_with(p))
 }
 fn open(p: &Paths) -> Result<Connection> {
     p.ensure()?;

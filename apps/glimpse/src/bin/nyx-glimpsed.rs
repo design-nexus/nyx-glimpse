@@ -37,6 +37,8 @@ fn run() -> anyhow::Result<()> {
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         anyhow::bail!("Glimpse indexer already running");
     }
+    let offer = p.clone();
+    std::thread::spawn(move || nyx_glimpse::aicore::offer_while_running(offer));
     let (tx, rx) = mpsc::channel();
     let config_file = p.config_file();
     let config_folder = p.config.clone();

@@ -15,6 +15,8 @@ pub mod utility;
 pub mod query;
 
 pub mod ai_setup;
+pub mod aicore;
+pub mod backend;
 pub mod currency;
 
 pub mod learning;

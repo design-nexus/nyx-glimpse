@@ -381,12 +381,9 @@ for line in sys.stdin:
     plugins::call(&p, "sandbox", "search", "search", json!({"query":"test"})).unwrap();
 }
 #[test]
-fn corrupt_models_are_rejected() {
-    let (t, p, _) = fixture();
-    let file = t.path().join("model");
-    fs::write(&file, b"bad").unwrap();
-    assert!(semantic::verify(&file, 3, &"0".repeat(64)).is_err());
-    assert_eq!(semantic::status(&p)["runtime"], false);
+fn content_search_is_off_until_local_ai_is() {
+    let (_t, p, _) = fixture();
+    assert_eq!(semantic::status(&p)["enabled"], false);
     assert!(semantic::search(&p, "fixture").unwrap().is_empty());
 }
 

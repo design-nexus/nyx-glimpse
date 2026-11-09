@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["apps/glimpse", "crates/glimpse-plugin-sdk"]
 
-exclude = ["apps/glimpse/inference", "apps/glimpse/examples/rust-plugin"]
+exclude = ["apps/glimpse/examples/rust-plugin"]
 
 [workspace.package]
 edition = "2024"

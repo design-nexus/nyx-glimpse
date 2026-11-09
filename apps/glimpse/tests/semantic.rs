@@ -2,7 +2,7 @@ use nyx_glimpse::{
     config::{Config, Paths},
     semantic,
 };
-use std::{fs, os::unix::fs::symlink, process::Command};
+use std::{fs, process::Command};
 fn two_page_pdf() -> Vec<u8> {
     let texts = [
         "A field guide describing coastal ecosystems, migratory birds, and conservation.",
@@ -36,18 +36,11 @@ fn two_page_pdf() -> Vec<u8> {
     pdf.into_bytes()
 }
 #[test]
-#[ignore = "requires explicitly downloaded real models and built runtime"]
+#[ignore = "requires Nyx AI Core with EmbeddingGemma 2 (nyx-glimpse models setup) and runs real inference"]
 fn real_multimodal_pipeline_and_scope() {
-    let installed = Paths::discover();
-    assert!(semantic::runtime(&installed).is_file(), "set up the runtime first");
-    for (name, bytes, hash) in semantic::MODELS {
-        semantic::verify(&installed.data.join("Models").join(name), bytes, hash).unwrap();
-    }
     let temp = tempfile::Builder::new().prefix("glimpse-inference-").tempdir().unwrap();
     let p = Paths { config: temp.path().join("config"), data: temp.path().join("data"), state: temp.path().join("state") };
     p.ensure().unwrap();
-    symlink(installed.data.join("Models"), p.data.join("Models")).unwrap();
-    symlink(installed.data.join("runtime"), p.data.join("runtime")).unwrap();
     let root = temp.path().join("files");
     fs::create_dir(&root).unwrap();
     let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
@@ -107,14 +100,11 @@ fn real_multimodal_pipeline_and_scope() {
 }
 
 #[test]
-#[ignore = "requires installed local models; small relevance check"]
+#[ignore = "requires Nyx AI Core with EmbeddingGemma 2 and runs real inference; small relevance check"]
 fn precise_relevance_sample() {
-    let installed = Paths::discover();
     let temp = tempfile::Builder::new().prefix("glimpse-relevance-").tempdir().unwrap();
     let p = Paths { config: temp.path().join("config"), data: temp.path().join("data"), state: temp.path().join("state") };
     p.ensure().unwrap();
-    symlink(installed.data.join("Models"), p.data.join("Models")).unwrap();
-    symlink(installed.data.join("runtime"), p.data.join("runtime")).unwrap();
     let root = temp.path().join("files");
     fs::create_dir(&root).unwrap();
     fs::write(
@@ -127,7 +117,7 @@ fn precise_relevance_sample() {
         "A banana bread recipe uses ripe bananas, flour, butter, and eggs. Bake the loaf in an oven until golden brown.",
     )
     .unwrap();
-    p.save(&Config { roots: vec![root], semantic: true, device: "cpu".into(), ..Config::default() }).unwrap();
+    p.save(&Config { roots: vec![root], semantic: true, ..Config::default() }).unwrap();
     semantic::index(&p).unwrap();
     let mut session = semantic::Session::start(&p).unwrap();
     let hits = session.search(&p, "legal agreement extension due date", || false).unwrap();

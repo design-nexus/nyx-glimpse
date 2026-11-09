@@ -71,6 +71,7 @@ impl ResultRow {
             Action::System(cmd) => format!("system:{cmd}"),
             Action::Command(providers::Target::Omarchy(id)) => omarchy::result_id(id),
             Action::Command(providers::Target::Service(id)) => format!("service:{id}"),
+            Action::Command(providers::Target::Shared(id)) => format!("action:{id}"),
             Action::Command(_) => String::new(),
             Action::Plugin(id, hit, _) => format!("plugin:{id}:{hit}"),
             Action::Password(p) => p.key(),
@@ -434,8 +435,8 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
         let mut extra = providers::Registry::default();
         let _ = extra.register(omarchy::Omarchy::default());
         let _ = extra.register(providers::DesktopServices);
+        let _ = extra.register(providers::SharedActions::default());
         let mut session: Option<semantic::Session> = None;
-        let mut session_device = String::new();
         loop {
             let (mut request_generation, mut query) = match enrich_rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(job) => job,
@@ -460,9 +461,8 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
             let Ok(c) = p.load() else {
                 continue;
             };
-            if session_device != c.device || !c.semantic {
+            if !c.semantic {
                 session = None;
-                session_device = c.device.clone();
             }
             let profile = learning::Profile::load(&p, &c).unwrap_or_default();
             let (candidates, errors) =
@@ -496,6 +496,9 @@ pub fn present(app: &gtk::Application, toggle: bool, query: Option<&str>) {
                 })();
                 match result {
                     Ok(hits) => {
+                        if let Some(note) = session.as_ref().and_then(|s| s.note()) {
+                            semantic_status = note.to_string();
+                        }
                         for hit in hits {
                             if let Some(path) = hit["path"].as_str() {
                                 let path = PathBuf::from(path);
@@ -1861,6 +1864,10 @@ fn activate(
     armed: &Rc<RefCell<Option<String>>>,
     reveal: bool,
 ) {
+    if let Action::Command(providers::Target::Shared(id)) = &result.action {
+        dispatch_shared(id.clone(), result.clone(), window.clone(), status.clone(), armed.clone());
+        return;
+    }
     if let Action::Command(target) = &result.action {
         dispatch_command(target.clone(), result.clone(), window.clone(), status.clone(), armed.clone());
         return;
@@ -2914,6 +2921,55 @@ mod tests {
         assert_eq!(super::highlight("Ärger ÄRGER", "ärger"), "<b>Ärger</b> <b>ÄRGER</b>");
         assert_eq!(super::highlight("abc", "zz"), "abc");
     }
+}
+
+/// Run a shared action off the GTK thread. One that asks first runs only after a
+/// second Enter on the same result; what it gives back is shown in the status line.
+fn dispatch_shared(
+    id: String,
+    result: ResultRow,
+    window: gtk::ApplicationWindow,
+    status: gtk::Label,
+    armed: Rc<RefCell<Option<String>>>,
+) {
+    let original_query = SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string()));
+    let identity = result.identity();
+    let confirmed = armed.borrow().as_deref() == Some(identity.as_str());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = nyx_glimpse::aicore::Core::new().and_then(|core| core.invoke(&id, serde_json::json!({}), confirmed));
+        let _ = tx.send(outcome.map_err(|e| nyx_glimpse::aicore::explain(&e)));
+    });
+    status.set_text("Running…");
+    glib::timeout_add_local(Duration::from_millis(20), move || {
+        if !window.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        let Ok(reply) = rx.try_recv() else {
+            return glib::ControlFlow::Continue;
+        };
+        if SEARCH.with(|s| s.borrow().as_ref().map(|e| e.text().to_string())) != original_query {
+            return glib::ControlFlow::Break;
+        }
+        match reply {
+            Err(e) => status.set_text(&e),
+            Ok(nyx_glimpse::aicore::Outcome::Ask) => {
+                *armed.borrow_mut() = Some(identity.clone());
+                status.set_text(&format!("{} · Press Enter again to run it", result.title));
+            }
+            Ok(nyx_glimpse::aicore::Outcome::Done(value)) => {
+                *armed.borrow_mut() = None;
+                record_selection(&result);
+                let summary = providers::summary(&value);
+                if summary.is_empty() {
+                    window.set_visible(false);
+                } else {
+                    status.set_text(&summary);
+                }
+            }
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 /// Resolve commands off the GTK thread and recheck availability immediately before launch.

@@ -1,6 +1,6 @@
 use crate::{
+    aicore::Core,
     config::{self, Paths},
-    process, semantic,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -26,18 +26,10 @@ fn alive(s: &Value) -> bool {
     s["running"] == true && s["pid"].as_u64().is_some_and(|pid| unsafe { libc::kill(pid as i32, 0) } == 0)
 }
 fn record(p: &Paths, running: bool, failed: bool, stage: &str, message: &str) -> Result<()> {
-    config::atomic_write(
-        &p.state.join("ai-setup.json"),
-        &serde_json::to_vec(
-            &json!({"running":running,"failed":failed,"pid":std::process::id(),"stage":stage,"message":message}),
-        )?,
-    )
+    record_with(p, json!({"running":running,"failed":failed,"pid":std::process::id(),"stage":stage,"message":message}))
 }
-fn assets_present(p: &Paths) -> bool {
-    semantic::runtime(p).is_file()
-        && semantic::MODELS
-            .iter()
-            .all(|(name, size, _)| p.data.join("Models").join(name).metadata().is_ok_and(|m| m.len() == *size))
+fn record_with(p: &Paths, state: Value) -> Result<()> {
+    config::atomic_write(&p.state.join("ai-setup.json"), &serde_json::to_vec(&state)?)
 }
 pub fn status(p: &Paths) -> String {
     let c = p.load().unwrap_or_default();
@@ -46,19 +38,10 @@ pub fn status(p: &Paths) -> String {
     }
     let s = state(p);
     if alive(&s) {
-        if s["stage"] == "download" {
-            let bytes: u64 = semantic::MODELS
-                .iter()
-                .map(|(name, size, _)| {
-                    p.data.join("Models").join(name).metadata().map(|m| m.len().min(*size)).unwrap_or_else(|_| {
-                        p.data.join("Models").join(format!("{name}.partial")).metadata().map(|m| m.len().min(*size)).unwrap_or(0)
-                    })
-                })
-                .sum();
-            return format!(
-                "Downloading and verifying · {}%",
-                bytes * 100 / semantic::MODELS.iter().map(|(_, s, _)| s).sum::<u64>()
-            );
+        if s["stage"] == "download"
+            && let Some(percent) = s["percent"].as_u64()
+        {
+            return format!("Nyx AI Core is downloading EmbeddingGemma 2 · {percent}%");
         }
         return s["message"].as_str().unwrap_or("Preparing local AI…").into();
     }
@@ -80,7 +63,7 @@ pub fn request(p: &Paths, enabled: bool) -> Result<()> {
         let _lock = config_lock(p)?;
         let mut c = p.load()?;
         c.semantic_requested = enabled;
-        c.semantic = enabled && c.semantic && assets_present(p);
+        c.semantic = enabled && c.semantic;
         if enabled {
             c.device = "auto".into();
         }
@@ -111,17 +94,32 @@ fn spawn(p: &Paths, retry: bool) -> Result<()> {
         .spawn()?;
     Ok(())
 }
+/// Local AI is Nyx AI Core's EmbeddingGemma 2: Glimpse's own copy of the model
+/// when it has one (nothing downloads again), else AI Core downloads it.
 pub fn run(p: &Paths) -> Result<()> {
+    let core = std::cell::RefCell::new(Core::new()?);
+    let shown = Cell::new(u64::MAX);
     run_steps(
         p,
-        |cancelled| {
-            let mut command = Command::new("bash");
-            command.arg(crate::cli::runtime_script()?);
-            process::capture_cancel(command, vec![], Duration::from_secs(1800), 128 * 1024, cancelled)
-                .context("Could not prepare local AI runtime")
-                .map(|_| ())
+        |_| {
+            if !core.borrow().available() {
+                bail!("Nyx AI Core isn't installed or running. Install it, then turn local AI on again");
+            }
+            Ok(())
         },
-        |cancelled| semantic::download_cancel(p, false, cancelled).context("Could not download or verify the AI package"),
+        |cancelled| {
+            let progress = |done: u64, total: u64| {
+                let percent = (done * 100).checked_div(total).unwrap_or(0);
+                if shown.replace(percent) != percent {
+                    let _ = record_with(
+                        p,
+                        json!({"running":true,"failed":false,"pid":std::process::id(),"stage":"download","percent":percent,
+                            "message":"Nyx AI Core is downloading EmbeddingGemma 2…"}),
+                    );
+                }
+            };
+            core.borrow_mut().prepare(p, cancelled, &progress).map(|_| ()).context("Could not make EmbeddingGemma 2 available")
+        },
         || crate::integration::start_indexing(p),
     )
 }
@@ -154,14 +152,12 @@ fn run_steps(
         cached.get()
     };
     let result = (|| -> Result<()> {
-        if !semantic::runtime(p).is_file() {
-            record(p, true, false, "runtime", "Preparing local AI…")?;
-            prepare(&cancelled)?;
-        }
+        record(p, true, false, "connect", "Connecting to Nyx AI Core…")?;
+        prepare(&cancelled)?;
         if cancelled() {
             bail!("operation cancelled");
         }
-        record(p, true, false, "download", "Downloading and verifying…")?;
+        record(p, true, false, "download", "Making EmbeddingGemma 2 available in Nyx AI Core…")?;
         download(&cancelled)?;
         let _lock = config_lock(p)?;
         let mut c = p.load()?;
