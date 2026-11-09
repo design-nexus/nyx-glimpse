@@ -57,7 +57,14 @@ impl Row {
 
 fn provider_row(c: providers::Candidate) -> Row {
     let (kind, icon) = match &c.target {
-        Target::App(id) => ("app", id.trim_end_matches(".desktop").to_string()),
+        Target::App(id) => (
+            "app",
+            gio_unix::DesktopAppInfo::new(id)
+                .and_then(|a| a.icon())
+                .and_then(|i| IconExt::to_string(&i))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "application-x-executable".into()),
+        ),
         Target::File(_) => ("file", "text-x-generic".to_string()),
         Target::System(_) => ("system", "system-shutdown-symbolic".to_string()),
         Target::Omarchy(_) => ("command", "utilities-terminal-symbolic".to_string()),

@@ -29,6 +29,21 @@ New Window or Settings when supported by their desktop entries. Utility results 
 another activation. The panel’s folder button selects sources; indexing then starts
 at login through a user service.
 
+## Quickshell interface (NyxOS)
+
+With Nyx Shell Core, Glimpse's panel is drawn by the shared Quickshell runtime
+(`quickshell/Glimpse`, loaded by `nyx-shell-qs` from `share/nyx-shell/components`) and its
+search runs in `nyx-glimpse-backend` (`data/nyx-glimpse-backend.service`), which serves
+results and activation over `$XDG_RUNTIME_DIR/nyx-glimpse/ui.sock`. Shell Core shows it
+as a transient overlay with the keyboard, on the active screen, over fullscreen windows,
+and gives focus back when it closes. `nyx-glimpse --toggle` (Super+Space) goes to that
+panel while it runs and to the GTK panel otherwise; `GLIMPSE_UI=gtk` always picks GTK.
+On Omarchy without Shell Core nothing changes: the GTK panel is Glimpse's.
+
+The QML panel has search, keyboard navigation, every result kind, and the second
+Enter for results that ask first. Previews, the action panel, `pw` and `cb` stay in
+the GTK panel for now.
+
 ## Local AI
 
 The crawler, extraction, SQLite index and ranking are Glimpse code. No Recall

@@ -1,0 +1,16 @@
+[Unit]
+Description=Glimpse search for its Quickshell interface
+Documentation=https://github.com/design-nexus/nyx-glimpse
+After=graphical-session.target
+PartOf=graphical-session.target
+# Launching apps and files needs the session's display.
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+ExecStart=nyx-glimpse-backend
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target
