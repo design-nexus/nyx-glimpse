@@ -7,7 +7,7 @@ PartOf=graphical-session.target
 ConditionEnvironment=WAYLAND_DISPLAY
 
 [Service]
-ExecStart=nyx-glimpse-backend
+ExecStart=%h/.local/bin/nyx-glimpse-backend
 Restart=on-failure
 RestartSec=2
 UMask=0077
