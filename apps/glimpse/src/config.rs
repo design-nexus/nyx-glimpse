@@ -43,6 +43,9 @@ pub struct Pinned {
     pub app: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub monitor: String,
+    /// Where it was put by hand, from the monitor's top-left; none in the stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<[i32; 2]>,
 }
 /// At most this many pinned panels.
 pub const MAX_PINNED: usize = 6;
@@ -181,7 +184,7 @@ pub fn validate(c: &Config) -> Result<()> {
     }
     if c.pinned.len() > MAX_PINNED
         || c.pinned.iter().any(|p| {
-            !app_id(&p.app) || p.monitor.len() > 64 || !p.monitor.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            !app_id(&p.app) || p.at.is_some_and(|a| a.iter().any(|v| v.abs() > 20_000)) || p.monitor.len() > 64 || !p.monitor.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         })
     {
         bail!("Invalid pinned panels");
@@ -341,15 +344,15 @@ mod tests {
     #[test]
     fn pinned_panels_are_checked() {
         let mut c = Config::default();
-        c.pinned = vec![Pinned { app: "io.github.design_nexus.nyx.Music".into(), monitor: "eDP-2".into() }];
+        c.pinned = vec![Pinned { app: "io.github.design_nexus.nyx.Music".into(), monitor: "eDP-2".into(), at: Some([40, 60]) }];
         validate(&c).unwrap();
         let toml = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&toml).unwrap().pinned, c.pinned);
         c.pinned[0].monitor = "eDP 2; rm".into();
         assert!(validate(&c).is_err(), "a monitor is a connector name");
-        c.pinned[0] = Pinned { app: "../../evil".into(), monitor: String::new() };
+        c.pinned[0] = Pinned { app: "../../evil".into(), monitor: String::new(), at: None };
         assert!(validate(&c).is_err(), "an app is an app ID");
-        c.pinned = (0..=MAX_PINNED).map(|i| Pinned { app: format!("io.github.design_nexus.nyx.App{i}"), monitor: String::new() }).collect();
+        c.pinned = (0..=MAX_PINNED).map(|i| Pinned { app: format!("io.github.design_nexus.nyx.App{i}"), monitor: String::new(), at: None }).collect();
         assert!(validate(&c).is_err(), "at most six");
     }
 }

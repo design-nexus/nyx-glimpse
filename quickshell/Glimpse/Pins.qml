@@ -23,7 +23,16 @@ Scope {
     }
 
     // By app ID, so a pin republished with fresh state keeps its surface.
+    // Tests (GLIMPSE_TEST_IPC): what a drop or a double-click does, without a pointer.
+    function testMove(app, at) {
+        for (const s of surfaces.instances) {
+            if (s.entry.app === app)
+                s.move(at);
+        }
+    }
+
     Variants {
+        id: surfaces
         model: pins.list.map(p => p.app)
 
         delegate: PinnedSurface {
@@ -45,6 +54,9 @@ Scope {
             overlayId: "glimpse.pin." + entry.id
             pinSize: [Math.min(800, minimum[0]), Math.min(900, minimum[1] + header)]
             pinMonitor: entry.monitor || ""
+            pinAt: entry.at || null
+            // Dragged by its header, or double-clicked back into the stack: kept for next time.
+            onPlaced: at => pins.backend.request("Pin", { app: entry.app, at: at }, null)
             // Remember where Shell Core put it.
             readonly property string placedOn: overlayState && overlayState.monitor ? overlayState.monitor : ""
             onPlacedOnChanged: if (placedOn !== "" && placedOn !== entry.monitor)
@@ -79,6 +91,23 @@ Scope {
                     anchors.right: parent.right
                     anchors.top: parent.top
                     height: surface.header
+                    // The header moves it: drag it anywhere, double-click to put it back.
+                    MouseArea {
+                        id: handle
+                        anchors.fill: parent
+                        anchors.rightMargin: buttons.width + 8
+                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                        property point from
+                        onPressed: m => from = Qt.point(m.x, m.y)
+                        onPositionChanged: m => {
+                            if (pressed)
+                                surface.dragBy(m.x - from.x, m.y - from.y);
+                        }
+                        onReleased: surface.drop()
+                        onDoubleClicked: surface.restack()
+                        Accessible.role: Accessible.Grip
+                        Accessible.name: "Move " + surface.entry.name + " (double-click to put it back)"
+                    }
                     Icon {
                         id: appIcon
                         x: 12

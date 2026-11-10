@@ -25,8 +25,9 @@
 //! `ClosePlugins`, `PluginOp`, `PluginSettings`, `PluginConfigure`, `AddFolder`,
 //! `OpenSettings`, and for panels `PanelRun {app, action, arguments, confirmed}` (only
 //! that app's actions; replies `{result}` or `{ask}`), `PanelOpen {app, arguments}`,
-//! `Pin {app, monitor?}` (only an app with one of Glimpse's panels; `monitor` is where
-//! Shell Core put it, kept for next time) and `Unpin {app}`.
+//! `Pin {app, monitor?, at?}` (only an app with one of Glimpse's panels; `monitor` is
+//! where Shell Core put it and `at` where it was dragged, null back in the stack, kept
+//! for next time) and `Unpin {app}`.
 //!
 //! Only Glimpse's own programs connect: its Quickshell panel and `nyx-glimpse`
 //! (`NYX_GLIMPSE_ALLOW_ANY=1` lets a test copy take any same-user client).
@@ -1086,6 +1087,7 @@ impl Shared {
             .filter_map(|p| {
                 let mut v = offer_json(&self.commands.pinned(catalog.as_ref()?, &p.app)?);
                 v["monitor"] = json!(p.monitor);
+                v["at"] = json!(p.at);
                 Some(v)
             })
             .collect();
@@ -1094,7 +1096,8 @@ impl Shared {
         }
     }
     /// Pin `app`'s panel (or note where it is), or unpin it.
-    fn pin(&self, app: &str, on: bool, monitor: Option<&str>) -> Result<()> {
+    /// `at`: `Some(None)` back in the stack, `Some(Some(xy))` put there by hand.
+    fn pin(&self, app: &str, on: bool, monitor: Option<&str>, at: Option<Option<[i32; 2]>>) -> Result<()> {
         let mut c = self.paths.load()?;
         if on {
             if self.commands.pinned(&self.commands.catalog(false), app).is_none() {
@@ -1102,9 +1105,14 @@ impl Shared {
             }
             let full = c.pinned.len() >= config::MAX_PINNED;
             match c.pinned.iter_mut().find(|p| p.app == app) {
-                Some(p) => p.monitor = monitor.unwrap_or(&p.monitor).to_string(),
+                Some(p) => {
+                    p.monitor = monitor.unwrap_or(&p.monitor).to_string();
+                    if let Some(at) = at {
+                        p.at = at;
+                    }
+                }
                 None if full => return Err(anyhow!("{} panels are pinned already", config::MAX_PINNED)),
-                None => c.pinned.push(config::Pinned { app: app.to_string(), monitor: monitor.unwrap_or_default().to_string() }),
+                None => c.pinned.push(config::Pinned { app: app.to_string(), monitor: monitor.unwrap_or_default().to_string(), at: at.flatten() }),
             }
         } else {
             c.pinned.retain(|p| p.app != app);
@@ -1592,7 +1600,8 @@ pub fn serve(p: Paths) -> Result<()> {
                     let on = op == "Pin";
                     let app = b["app"].as_str().unwrap_or("").to_string();
                     let monitor = b["monitor"].as_str().map(str::to_string);
-                    std::thread::spawn(move || match shared.pin(&app, on, monitor.as_deref()) {
+                    let at = b.get("at").map(|a| serde_json::from_value::<[i32; 2]>(a.clone()).ok());
+                    std::thread::spawn(move || match shared.pin(&app, on, monitor.as_deref(), at) {
                         Ok(()) => req.ok(json!({})),
                         Err(e) => req.err("failed", format!("{e:#}")),
                     });

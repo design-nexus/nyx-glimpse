@@ -258,6 +258,9 @@ Scope {
         function mini(fn: string): void {
             panel.miniApp(fn);
         }
+        function pinMove(app: string, x: int, y: int): void {
+            pinsView.testMove(app, x < 0 ? null : [x, y]);
+        }
         function pin(): void {
             if (panel.shownPanel())
                 root.togglePin(panel.shownPanel());
