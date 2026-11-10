@@ -1314,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "nyx-actions"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=ebd58693232f388246189aebc0eecc2e51f554fa#ebd58693232f388246189aebc0eecc2e51f554fa"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=9b195878e6bb3bf6f8842f3b3bfa9ddb1ff49fd5#9b195878e6bb3bf6f8842f3b3bfa9ddb1ff49fd5"
 dependencies = [
  "futures-util",
  "jsonschema",
@@ -2123,7 +2123,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
