@@ -94,6 +94,10 @@ Item {
             g.select(g.selected + ((e.modifiers & Qt.ShiftModifier) ? -1 : 1));
         } else if (ctrl && e.key === Qt.Key_P && preview.playing !== undefined && preview.hasMedia) {
             preview.togglePlayback();
+        } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
+            // A command's completion; the keyboard stays in the search either way.
+            if (g.row && g.row.fill)
+                setText(g.row.fill);
         } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
             g.activate(g.selected, ctrl ? "reveal" : alt ? "alt" : "enter");
         } else if (ctrl && e.key === Qt.Key_O && g.row && g.row.kind === "password") {
@@ -171,7 +175,7 @@ Item {
                     anchors.fill: parent
                     verticalAlignment: Text.AlignVCenter
                     visible: input.text === "" && !input.preeditText
-                    text: "Search apps, files and content"
+                    text: "Search apps, files, content and commands"
                     color: Style.dimText
                     font: input.font
                 }

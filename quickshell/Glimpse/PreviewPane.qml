@@ -54,6 +54,9 @@ Item {
         function onSelectedIdChanged() {
             pane.load();
         }
+        function onPreviewSerialChanged() {
+            pane.load();
+        }
     }
     onCalcChanged: load()
 

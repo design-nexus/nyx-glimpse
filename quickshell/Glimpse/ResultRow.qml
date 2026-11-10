@@ -55,7 +55,8 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             name: r.modelData.icon
             size: 20
-            recolor: r.modelData.kind !== "app" || r.modelData.icon.endsWith("-symbolic")
+            // An app's own icon (an app, or one of its commands) keeps its colours.
+            recolor: r.modelData.icon.endsWith("-symbolic") || (r.modelData.kind !== "app" && r.modelData.kind !== "command")
             color: r.selected ? Style.accent : Style.dimText
         }
 

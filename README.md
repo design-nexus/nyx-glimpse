@@ -192,10 +192,22 @@ Local AI exposes one enable toggle and a setup status. Turning it off cancels pe
 setup and leaves the model where it is. Interrupted setup resumes when Glimpse next
 opens; failures expose Retry.
 
-Glimpse uses the same shared actions as the Assistant, from Nyx AI Core's registry:
-actions Nyx apps offer that need no arguments appear as results (an action that asks
-first runs on a second Enter), and Glimpse offers `glimpse.search` (read-only file
-search) to them while AI Core runs.
+Nyx apps' commands are the ones `nyx APP …` runs in a terminal, from the same registry
+(nyx-core's nyx-actions; installed apps' manifests and running apps):
+
+- In the Quickshell panel, a search that starts with an app's name lists its commands
+  (`notes`), resolves what follows into arguments (`notes create Project ideas`,
+  `calendar today`), and offers completions for the word being typed.
+- Tab takes the selected command's words into the search. Enter runs a command that
+  has everything it needs; one that still needs an argument fills the search instead.
+  One that asks first (anything that deletes, overwrites, sends or needs more rights)
+  shows what it will do and runs on a second Enter. The app checks every call again.
+- Other searches match commands by title, alias and keyword.
+- A command's result shows in its preview: a list, its fields, or a line in the status bar.
+
+The GTK panel keeps the earlier shared actions from Nyx AI Core (those without
+arguments). Glimpse offers `glimpse.search` (read-only file search) to AI Core while
+it runs.
 
 Appearance has only Follow Omarchy and a theme selector. Following Omarchy disables
 the selector while retaining its selected value. Theme preferences remain shared across

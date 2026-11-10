@@ -14,18 +14,22 @@
 //! Events: `message {text}` for the status line, `rerun {}` to search again.
 //!
 //! Operations: `Query`, `Activate {id, generation, how, confirmed}` (replies `{done}`,
-//! `{ask}`, `{message}` or `{message, rerun}`), `Preview`, `Actions`, `ContextActions`,
+//! `{ask}`, `{message}`, `{message, rerun}`, `{fill}` for a command that needs more
+//! words, or `{message, preview}` when a command's result is in its preview),
+//! `Preview`, `Actions`, `ContextActions`,
 //! `History`, `CopyAnswer`, `Show {query?}`, `Hide`, `Toggle`, `OpenPlugins`,
 //! `ClosePlugins`, `PluginOp`, `PluginSettings`, `PluginConfigure`, `AddFolder`,
 //! `OpenSettings`.
 //!
 //! Search runs on one worker thread: `pw` and `cb` queries go to Nyx Passwords and Nyx
 //! Clipboard alone; others get the fast providers first (apps, file names, file contents
-//! by words, utilities, power), then the slower ones (Omarchy, services, plugins, shared
-//! actions, contents by meaning). A newer query cancels the rest.
+//! by words, utilities, power, and app commands as last seen), then the slower ones
+//! (Omarchy, services, plugins, app commands brought up to date and matched by name,
+//! contents by meaning). A newer query cancels the rest.
 
 use crate::{
     clipboard, clips,
+    commands::{self, Command as AppCommand, Commands},
     config::{self, Paths},
     index, learning, passwords, plugins,
     preview::{self, Body, Flavor},
@@ -52,6 +56,8 @@ pub enum Item {
     System(&'static str),
     Password(vault::Pw),
     Clipboard(clips::Cb),
+    /// An app's action, with the arguments typed so far.
+    Command(AppCommand),
 }
 
 /// Files found only by meaning come last.
@@ -77,6 +83,9 @@ impl Row {
             Item::File(..) | Item::Provider(Target::File(_)) => (1, "Files"),
             Item::Copy(_) => (2, "Utilities"),
             Item::Provider(Target::Plugin(..)) => (4, "Plugins"),
+            // Typed as a command, it comes first; matched by the app's name or a word, after files.
+            Item::Command(c) if c.explicit => (0, "Commands"),
+            Item::Command(_) | Item::Provider(Target::Shared(_)) => (3, "Commands"),
             Item::System(_) | Item::Provider(_) => (3, "System"),
             Item::Password(_) => (0, "Passwords"),
             Item::Clipboard(_) => (0, "Clipboard"),
@@ -101,6 +110,16 @@ impl Row {
             Item::System(_) | Item::Provider(_) => vec![(enter, "Run")],
             Item::Password(p) => p.hints(),
             Item::Clipboard(c) => c.hints(),
+            Item::Command(c) => {
+                let run = if !c.missing.is_empty() && c.available {
+                    "Continue"
+                } else if c.asks {
+                    "Run (asks first)"
+                } else {
+                    "Run"
+                };
+                vec![(enter, run), (&["Tab"][..], "Complete")]
+            }
         }
     }
 
@@ -125,6 +144,10 @@ impl Row {
             "hints": hints,
             "tooltip": tooltip,
             "media": media,
+            "fill": match &self.item {
+                Item::Command(c) => c.fill.as_str(),
+                _ => "",
+            },
         })
     }
 }
@@ -159,6 +182,18 @@ fn provider_row(c: providers::Candidate) -> Row {
         target => Item::Provider(target),
     };
     Row { id: c.id, title: c.title, subtitle: c.subtitle, reason: String::new(), kind, icon, item }
+}
+
+fn command_row(c: AppCommand) -> Row {
+    Row {
+        id: c.id(),
+        title: c.row_title(),
+        subtitle: c.subtitle(),
+        reason: c.badge(),
+        kind: "command",
+        icon: c.icon.clone(),
+        item: Item::Command(c),
+    }
 }
 
 fn file_row(path: PathBuf, hit: &Value) -> Row {
@@ -197,6 +232,8 @@ fn system_row(name: &str, cmd: &'static str) -> Row {
 fn merge(found: &mut Vec<Row>, more: Vec<Row>) {
     for mut row in more {
         match found.iter_mut().find(|r| r.id == row.id) {
+            // Brought up to date (the app started, or stopped).
+            Some(existing) if matches!(row.item, Item::Command(_)) => *existing = row,
             Some(existing) => {
                 if let Item::File(_, hit) = &mut row.item
                     && !hit.is_null()
@@ -234,19 +271,33 @@ pub struct Engine {
     slow: providers::Registry,
     files: providers::Files,
     extensions: providers::Extensions,
+    commands: Arc<Commands>,
     session: Option<semantic::Session>,
     db: Option<rusqlite::Connection>,
 }
 
 impl Engine {
     pub fn new(paths: Paths, apps: Vec<(String, String, String)>) -> Engine {
+        Engine::with_commands(paths, apps, Arc::new(Commands::default()))
+    }
+
+    pub fn with_commands(paths: Paths, apps: Vec<(String, String, String)>, commands: Arc<Commands>) -> Engine {
         let mut fast = providers::Registry::default();
         let _ = fast.register(providers::Applications(apps));
         let mut slow = providers::Registry::default();
         let _ = slow.register(crate::omarchy::Omarchy::default());
         let _ = slow.register(providers::DesktopServices);
-        let _ = slow.register(providers::SharedActions::default());
-        Engine { paths, fast, slow, files: providers::Files::default(), extensions: providers::Extensions, session: None, db: None }
+        let _ = slow.register(commands::Fuzzy(commands.clone()));
+        Engine {
+            paths,
+            fast,
+            slow,
+            files: providers::Files::default(),
+            extensions: providers::Extensions,
+            commands,
+            session: None,
+            db: None,
+        }
     }
 
     /// The fast results for `q`.
@@ -284,7 +335,7 @@ impl Engine {
         }
         let profile = learning::Profile::load(p, &c).unwrap_or_default();
         let ctx = SearchContext { paths: p, config: &c, query: q, cancelled };
-        let mut rows = Vec::new();
+        let mut rows: Vec<Row> = self.commands.rows(&self.commands.catalog(false), q).into_iter().map(command_row).collect();
         let mut apps = 0;
         for (_, candidate) in self.fast.search(&ctx, &profile).0 {
             if matches!(candidate.target, Target::App(_)) {
@@ -325,7 +376,8 @@ impl Engine {
         }
         let profile = learning::Profile::load(p, &c).unwrap_or_default();
         let ctx = SearchContext { paths: p, config: &c, query: q, cancelled };
-        let mut rows: Vec<Row> = self.slow.search(&ctx, &profile).0.into_iter().take(30).map(|(_, c)| provider_row(c)).collect();
+        let mut rows: Vec<Row> = self.commands.rows(&self.commands.catalog(true), q).into_iter().map(command_row).collect();
+        rows.extend(self.slow.search(&ctx, &profile).0.into_iter().take(30).map(|(_, c)| provider_row(c)));
         if let Ok(hits) = providers::Provider::discover(&mut self.extensions, &ctx) {
             rows.extend(hits.into_iter().map(provider_row));
         }
@@ -420,6 +472,10 @@ pub enum Done {
     Refresh(String),
     /// The vault opened: the panel comes back and searches again.
     Unlocked,
+    /// A command needs more words: the search becomes this.
+    Fill(String),
+    /// A command ran; its result is in its preview, this in the status line.
+    Result(String),
 }
 
 /// Run `row`'s action as plain Enter (`reveal`: Ctrl+Enter). `confirmed` is true for the
@@ -479,20 +535,14 @@ pub fn activate(p: &Paths, row: &Row, confirmed: bool, reveal: bool) -> Result<D
             }
             Ok(Done::Show(text.lines().collect::<Vec<_>>().join(" · ")))
         }
-        Item::Provider(Target::Shared(id)) => {
-            let outcome = crate::aicore::Core::new()
-                .and_then(|core| core.invoke(id, json!({}), confirmed))
-                .map_err(|e| anyhow!(crate::aicore::explain(&e)))?;
-            match outcome {
-                crate::aicore::Outcome::Ask => Ok(Done::Ask(format!("{} · Press Enter again to run it", row.title))),
-                crate::aicore::Outcome::Done(value) => {
-                    let summary = providers::summary(&value);
-                    Ok(if summary.is_empty() { Done::Closed } else { Done::Show(summary) })
-                }
-            }
-        }
         Item::Provider(Target::Plugin(id, _, action)) => run_plugin_action(p, id, action, reveal),
-        Item::Provider(Target::System(_) | Target::File(_)) | Item::Password(_) | Item::Clipboard(_) => bail!("Unsupported result"),
+        // Commands run with the backend's registry (`run_command`).
+        Item::Provider(Target::System(_) | Target::File(_) | Target::Shared(_))
+        | Item::Password(_)
+        | Item::Clipboard(_)
+        | Item::Command(_) => {
+            bail!("Unsupported result")
+        }
     }
 }
 
@@ -555,6 +605,52 @@ fn system_command(cmd: &str) -> Command {
     let mut c = Command::new(argv[0]);
     c.args(&argv[1..]);
     c
+}
+
+/// Run a command as Glimpse's own: missing words fill the search first; one that asks
+/// waits for a second Enter; the app checks the call again and may refuse.
+fn run_command(shared: &Shared, c: &AppCommand, confirmed: bool, id: &str) -> Result<Done> {
+    if !c.available {
+        bail!("{}", c.reason.clone().unwrap_or_else(|| format!("{} isn't available now", c.title)));
+    }
+    if !c.missing.is_empty() {
+        return Ok(Done::Fill(c.fill.clone()));
+    }
+    match shared.commands.invoke(c, confirmed) {
+        Ok(value) => {
+            if learning::eligible_id(id) {
+                let _ = learning::record(&shared.paths, id, &c.fill);
+            }
+            if value.is_null() {
+                return Ok(Done::Closed);
+            }
+            let (summary, html, details) = commands::result_view(c, &value);
+            if html.is_none() && details.is_empty() {
+                return Ok(Done::Show(summary));
+            }
+            let body = match html {
+                Some(html) => json!({"type": "text", "html": html}),
+                None => json!({"type": "card", "icon": c.icon, "title": c.row_title(), "desc": summary}),
+            };
+            let details: Vec<Value> = details.into_iter().map(|(k, v)| json!([k, v])).collect();
+            shared.ran.lock().unwrap().insert(id.to_string(), json!({"body": body, "details": details}));
+            Ok(Done::Result(summary))
+        }
+        Err(e) if e.kind == nyx_actions::ErrorKind::ConfirmationRequired => {
+            let details: Vec<Value> = c.details().into_iter().map(|(k, v)| json!([k, v])).collect();
+            let card = json!({"type": "card", "icon": "dialog-warning-symbolic", "title": format!("{}?", c.row_title()),
+                "desc": format!("{} {}. Press Enter again to go ahead; anything else cancels.", c.app, c.risk.label())});
+            shared.ran.lock().unwrap().insert(id.to_string(), json!({"body": card, "details": details}));
+            Ok(Done::Ask(format!("{}: {} {}. Press Enter again to run it", c.app, c.row_title(), c.risk.label())))
+        }
+        Err(e) => Err(anyhow!(e.message)),
+    }
+}
+
+/// A command's preview before it runs: what it does, the arguments, what it still needs.
+fn command_preview(c: &AppCommand) -> Value {
+    let details: Vec<Value> = c.details().into_iter().map(|(k, v)| json!([k, v])).collect();
+    json!({"body": {"type": "card", "icon": c.icon, "title": c.row_title(), "desc": c.description}, "details": details})
 }
 
 /// The action panel's entries for a row (Ctrl+K): `(title, verb)`.
@@ -657,6 +753,7 @@ fn preview_json(row: &Row, query: &str, images: &Path) -> Value {
             let shown = preview::file_preview(path, hit, query, Flavor::Html, true);
             json!({"body": body_json(shown.body, row, images), "details": details(shown.details)})
         }
+        Item::Command(c) => command_preview(c),
         Item::Provider(_) => json!({"body": card(&row.icon, &row.title, &row.subtitle), "details": []}),
     }
 }
@@ -826,6 +923,9 @@ struct Shared {
     note: Mutex<String>,
     jobs: Mutex<mpsc::Sender<(u64, String)>>,
     images: PathBuf,
+    commands: Arc<Commands>,
+    /// Commands' results by row, shown in their preview until the next search.
+    ran: Mutex<HashMap<String, Value>>,
 }
 
 impl Shared {
@@ -911,6 +1011,11 @@ fn run(shared: &Arc<Shared>, row: &Row, query: &str, how: &str, confirmed: bool)
         return Ok(Done::Show("Alias updated".into()));
     }
     match &row.item {
+        Item::Command(c) if how == "enter" => run_command(shared, c, confirmed, &row.id),
+        Item::Provider(Target::Shared(id)) if how == "enter" => {
+            let c = shared.commands.plain(id).ok_or_else(|| anyhow!("That action isn't offered any more"))?;
+            run_command(shared, &c, confirmed, &row.id)
+        }
         Item::Password(pw) => {
             use passwords::Verb;
             let verb = match how {
@@ -1042,6 +1147,8 @@ pub fn serve(p: Paths) -> Result<()> {
         note: Mutex::default(),
         jobs: Mutex::new(jobs),
         images,
+        commands: Arc::new(Commands::default()),
+        ran: Mutex::default(),
     });
 
     let handler = shared.clone();
@@ -1081,6 +1188,7 @@ pub fn serve(p: Paths) -> Result<()> {
                 "Query" => {
                     let text = b["text"].as_str().unwrap_or("").to_string();
                     shared.generation.store(generation, Ordering::SeqCst);
+                    shared.ran.lock().unwrap().clear();
                     let _ = shared.jobs.lock().unwrap().send((generation, text));
                     req.ok(json!({}))
                 }
@@ -1092,10 +1200,12 @@ pub fn serve(p: Paths) -> Result<()> {
                     };
                     std::thread::spawn(move || match run(&shared, &row, &query, &how, confirmed) {
                         Ok(Done::Closed) => req.ok(json!({"done": true})),
-                        Ok(Done::Ask(message)) => req.ok(json!({"ask": message})),
+                        Ok(Done::Ask(message)) => req.ok(json!({"ask": message, "preview": true})),
                         Ok(Done::Show(message)) => req.ok(json!({"message": message})),
                         Ok(Done::Refresh(message)) => req.ok(json!({"message": message, "rerun": true})),
                         Ok(Done::Unlocked) => req.ok(json!({"rerun": true})),
+                        Ok(Done::Fill(text)) => req.ok(json!({"fill": text})),
+                        Ok(Done::Result(message)) => req.ok(json!({"message": message, "preview": true})),
                         Err(e) => req.err("failed", e.to_string()),
                     });
                 }
@@ -1103,7 +1213,20 @@ pub fn serve(p: Paths) -> Result<()> {
                     let Some((row, query)) = shared.row(generation, &id) else {
                         return req.err("stale", "That result is gone; search again");
                     };
-                    std::thread::spawn(move || req.ok(preview_json(&row, &query, &shared.images)));
+                    if let Some(ran) = shared.ran.lock().unwrap().get(&row.id).cloned() {
+                        return req.ok(ran);
+                    }
+                    std::thread::spawn(move || {
+                        let preview = match &row.item {
+                            Item::Command(c) => command_preview(c),
+                            Item::Provider(Target::Shared(id)) => match shared.commands.plain(id) {
+                                Some(c) => command_preview(&c),
+                                None => preview_json(&row, &query, &shared.images),
+                            },
+                            _ => preview_json(&row, &query, &shared.images),
+                        };
+                        req.ok(preview)
+                    });
                 }
                 "Actions" => {
                     let Some((row, _)) = shared.row(generation, &id) else {
@@ -1289,7 +1412,7 @@ pub fn serve(p: Paths) -> Result<()> {
     shared.publish_plugins();
     watch_settings(shared.clone());
 
-    let mut engine = Engine::new(p.clone(), applications());
+    let mut engine = Engine::with_commands(p.clone(), applications(), shared.commands.clone());
     let publish = |g: u64, q: &str, found: &[Row], status: &str, complete: bool| {
         if shared.generation.load(Ordering::SeqCst) != g {
             return;
@@ -1421,6 +1544,34 @@ mod tests {
         let reboot = engine.fast("reboot", &|| false).unwrap().0.into_iter().find(|r| r.id == "system:reboot").unwrap();
         assert!(matches!(activate(&p, &reboot, false, false).unwrap(), Done::Ask(_)), "reboot asks first");
         assert!(engine.fast("report", &|| true).is_ok());
+    }
+
+    #[test]
+    fn app_commands_come_first_when_typed_as_commands() {
+        let dir = tempfile::Builder::new().prefix("glimpse-test-").tempdir().unwrap();
+        let p = Paths { config: dir.path().join("c"), data: dir.path().join("d"), state: dir.path().join("s") };
+        p.ensure().unwrap();
+        let actions = dir.path().join("actions");
+        std::fs::create_dir(&actions).unwrap();
+        let manifest = json!({"tools": [{"name": "notes.create", "description": "Create a note.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+            "annotations": {"title": "Create a note"}, "x-nyx": {"risk": "writes", "positional": ["title"]}}],
+            "nyx": {"api": 2, "app": "io.github.design_nexus.nyx.Notes", "name": "Notes", "namespaces": ["notes"], "bus_name": "io.github.design_nexus.nyx.Notes", "activation": "dbus"}});
+        std::fs::write(actions.join("io.github.design_nexus.nyx.Notes.json"), manifest.to_string()).unwrap();
+        let commands = Arc::new(Commands::new(nyx_actions::Options { dirs: vec![actions], bus_address: None, live: false }));
+        let apps = vec![("io.github.design_nexus.nyx.Notes.desktop".to_string(), "Notes".to_string(), "notes".to_string())];
+        let mut engine = Engine::with_commands(p.clone(), apps, commands);
+        let sorted = |mut rows: Vec<Row>| {
+            rows.sort_by_key(|r| r.category().0);
+            rows
+        };
+        let typed = sorted(engine.fast("notes create Project ideas", &|| false).unwrap().0);
+        assert_eq!((typed[0].kind, typed[0].title.as_str()), ("command", "Create a note · Project ideas"));
+        assert_eq!(typed[0].json(&[])["hints"][0]["label"], "Run");
+        let named = sorted(engine.fast("notes", &|| false).unwrap().0);
+        assert_eq!(named[0].kind, "app", "the app's name alone finds the app first: {named:?}");
+        let create = named.iter().find(|r| r.kind == "command").unwrap();
+        assert_eq!((create.reason.as_str(), create.json(&[])["fill"].as_str()), ("Needs TITLE", Some("notes create ")));
+        assert!(engine.fast("pw notes", &|| false).unwrap().0.is_empty(), "pw stays the vault's alone");
     }
 
     #[test]

@@ -47,6 +47,8 @@ Scope {
     // The result waiting for a second Enter, and what the status line says.
     property string armed: ""
     property string message: ""
+    // A command's result is in its preview: the pane loads it again.
+    property int previewSerial: 0
 
     function hide() {
         backend.request("Hide", {}, null);
@@ -91,13 +93,21 @@ Scope {
             } else if (ok.ask) {
                 armed = r.id;
                 say(ok.ask);
+                if (ok.preview)
+                    previewSerial += 1;
             } else if (ok.done) {
                 armed = "";
                 root.hide();
+            } else if (ok.fill !== undefined) {
+                // A command that needs more words: the search becomes it, ready to type on.
+                armed = "";
+                panel.setText(ok.fill);
             } else {
                 armed = "";
                 if (ok.message)
                     say(ok.message);
+                if (ok.preview)
+                    previewSerial += 1;
                 if (ok.rerun)
                     root.search(panel.text);
             }
