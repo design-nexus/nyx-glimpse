@@ -21,12 +21,26 @@ fn main() -> glib::ExitCode {
         }
         Ok(false) => {}
     }
-    // With Shell Core, the Quickshell interface is Glimpse's panel; the GTK one answers
-    // when it isn't running.
-    let only = |flag: &str| args.len() == 1 && args[0] == flag;
-    if (only("--toggle") && nyx_glimpse::backend::ask_interface("Toggle").is_ok())
-        || (only("--hide") && nyx_glimpse::backend::ask_interface("Hide").is_ok())
-    {
+    // Where the Quickshell interface runs (nyx-shell-qs), it is Glimpse's panel; the GTK
+    // one answers when it doesn't.
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    let query = args.iter().position(|a| a == "--query").and_then(|i| args.get(i + 1));
+    let asked = if has("--hide") {
+        nyx_glimpse::backend::ask_interface("Hide", serde_json::json!({}))
+    } else if has("--add-folder") {
+        nyx_glimpse::backend::ask_interface("AddFolder", serde_json::json!({}))
+    } else if has("--plugins") {
+        nyx_glimpse::backend::ask_interface("OpenPlugins", serde_json::json!({}))
+    } else if has("--add-plugin") {
+        nyx_glimpse::backend::ask_interface("PluginOp", serde_json::json!({"op": "add_local"}))
+    } else if let Some(query) = query {
+        nyx_glimpse::backend::ask_interface("Show", serde_json::json!({"query": query}))
+    } else if has("--toggle") {
+        nyx_glimpse::backend::ask_interface("Toggle", serde_json::json!({}))
+    } else {
+        nyx_glimpse::backend::ask_interface("Show", serde_json::json!({}))
+    };
+    if asked.is_ok() {
         return glib::ExitCode::SUCCESS;
     }
     if std::env::var_os("GSK_RENDERER").is_none() {

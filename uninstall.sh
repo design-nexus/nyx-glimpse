@@ -43,6 +43,9 @@ for a in "${apps[@]}"; do
   esac
   if [[ $a == glimpse ]]; then
     systemctl --user disable --now nyx-glimpsed.service 2>/dev/null || true
+    systemctl --user disable --now nyx-glimpse-backend.service 2>/dev/null || true
+    rm -f "$share/nyx-shell/components/nyx-glimpse" "$config/systemd/user/nyx-glimpse-backend.service"
+    rm -rf "$share/nyx-glimpse/qml"
     "$bin/nyx-glimpse" integration restore
     rm -f "$config/systemd/user/nyx-glimpsed.service"
     systemctl --user daemon-reload 2>/dev/null || true

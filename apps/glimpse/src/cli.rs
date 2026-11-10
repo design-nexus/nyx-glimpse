@@ -15,7 +15,7 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
     };
     match op {
         "--help" | "-h" => println!(
-            "Glimpse — local universal search\n\n nyx-glimpse [--toggle] [--add-folder] [--plugins]\n nyx-glimpse sources add|remove|exclude|code PATH\n nyx-glimpse index scan|status|pause|resume|purge\n nyx-glimpse models status|setup|download [--text-only]\n nyx-glimpse plugins list|catalog [--refresh]|install ID\n nyx-glimpse plugins link-local DIR (development)\n nyx-glimpse plugins install-local DIR | install-git URL COMMIT [FOLDER]\n nyx-glimpse plugins enable ID --approve-permissions\n nyx-glimpse plugins disable|remove|update|rollback ID [--purge]\n nyx-glimpse plugins update-from DIR\n nyx-glimpse integration window|enable|disable|restore\n nyx-glimpse service enable|disable\n nyx-glimpse search QUERY\n nyx-glimpse diagnostics\n nyx-glimpse favorite RESULT_ID\n nyx-glimpse alias RESULT_ID [ALIAS]\n nyx-glimpse history list|clear\n nyx-glimpse omarchy-actions\n nyx-glimpse benchmark-search"
+            "Glimpse — local universal search\n\n nyx-glimpse [--toggle] [--add-folder] [--plugins]\n nyx-glimpse sources add|remove|exclude|code PATH\n nyx-glimpse index scan|status|pause|resume|purge\n nyx-glimpse models status|setup|download [--text-only]\n nyx-glimpse plugins list|catalog [--refresh]|install ID\n nyx-glimpse plugins link-local DIR (development)\n nyx-glimpse plugins install-local DIR | install-git URL COMMIT [FOLDER]\n nyx-glimpse plugins enable ID --approve-permissions\n nyx-glimpse plugins disable|remove|update|rollback ID [--purge]\n nyx-glimpse plugins update-from DIR\n nyx-glimpse integration window|enable|disable|restore\n nyx-glimpse service enable|disable\n nyx-glimpse ui qml|gtk\n nyx-glimpse search QUERY\n nyx-glimpse diagnostics\n nyx-glimpse favorite RESULT_ID\n nyx-glimpse alias RESULT_ID [ALIAS]\n nyx-glimpse history list|clear\n nyx-glimpse omarchy-actions\n nyx-glimpse benchmark-search"
         ),
         "sources" => {
             let cmd = arg(a, 1)?;
@@ -143,6 +143,7 @@ pub fn dispatch(a: &[String]) -> Result<bool> {
             _ => bail!("unknown integration operation"),
         },
         "service" => integration::user_service(&p, arg(a, 1)? == "enable")?,
+        "ui" => integration::panel_ui(&p, arg(a, 1)?)?,
         "search" => {
             let q = a[1..].join(" ");
             println!("{}", serde_json::to_string(&index::search(&p, &p.load()?, &q, 40)?)?);

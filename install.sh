@@ -317,6 +317,21 @@ exec = "nyx-glimpse-settings"
 MANIFEST
     done
     [[ ${NYX_SKIP_INTEGRATION:-0} == 1 || ! -f $config/hypr/hyprland.lua ]] || "$bin/nyx-glimpse" integration window
+    # The Quickshell panel and the backend that serves it. Where Nyx Shell's runtime is
+    # installed it is Glimpse's panel, unless `nyx-glimpse ui gtk` chose the GTK one.
+    if [[ -f $src/quickshell/Glimpse/Main.qml ]]; then
+      rm -rf "$gshare/qml"
+      mkdir -p "$gshare/qml" "$config/systemd/user"
+      cp -a "$src/quickshell/Glimpse/." "$gshare/qml/"
+      install -m 644 "$d/data/nyx-glimpse-backend.service" "$config/systemd/user/nyx-glimpse-backend.service"
+      systemctl --user daemon-reload 2>/dev/null || true
+      if [[ -d $share/nyx-shell/qml && $(cat "$gshare/panel-ui" 2>/dev/null || echo qml) == qml ]]; then
+        say "Using Glimpse's Quickshell panel (back to GTK: nyx-glimpse ui gtk)"
+        "$bin/nyx-glimpse" ui qml
+        systemctl --user restart nyx-glimpse-backend.service 2>/dev/null || true
+        systemctl --user try-restart nyx-shell-qs.service 2>/dev/null || true
+      fi
+    fi
   fi
 
   # The same app from before the rename.

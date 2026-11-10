@@ -136,6 +136,43 @@ pub fn user_service(paths: &Paths, enabled: bool) -> Result<()> {
     process::capture(c, vec![], Duration::from_secs(10), 65536)?;
     Ok(())
 }
+/// Which panel Glimpse shows: `qml` links its Quickshell panel into Nyx Shell's runtime
+/// (nyx-shell-qs) and starts the backend that serves it, so `nyx-glimpse --toggle` goes
+/// there; `gtk` takes both away again. The choice is kept for the next install.
+pub fn panel_ui(paths: &Paths, ui: &str) -> Result<()> {
+    let share = paths.data.parent().context("XDG data parent")?;
+    let qml = paths.data.join("qml");
+    let link = share.join("nyx-shell/components/nyx-glimpse");
+    let backend = "nyx-glimpse-backend.service";
+    let systemctl = |args: &[&str]| -> Result<()> {
+        let mut c = Command::new("systemctl");
+        c.arg("--user").args(args);
+        process::capture(c, vec![], Duration::from_secs(10), 65536)?;
+        Ok(())
+    };
+    match ui {
+        "qml" => {
+            if !qml.join("Main.qml").exists() {
+                bail!("Glimpse's Quickshell panel isn't installed");
+            }
+            if !share.join("nyx-shell/qml").exists() {
+                bail!("Nyx Shell's Quickshell runtime isn't installed");
+            }
+            fs::create_dir_all(link.parent().context("components folder")?)?;
+            let _ = fs::remove_file(&link);
+            std::os::unix::fs::symlink(&qml, &link)?;
+            systemctl(&["enable", "--now", backend])?;
+        }
+        "gtk" => {
+            let _ = fs::remove_file(&link);
+            systemctl(&["disable", "--now", backend])?;
+        }
+        _ => bail!("nyx-glimpse ui qml|gtk"),
+    }
+    fs::create_dir_all(&paths.data)?;
+    fs::write(paths.data.join("panel-ui"), ui)?;
+    Ok(())
+}
 pub fn start_indexing(paths: &Paths) -> Result<()> {
     // Starting the indexer does not change whether it starts at login.
     service_unit(paths)?;

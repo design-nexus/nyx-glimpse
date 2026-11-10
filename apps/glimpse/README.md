@@ -29,20 +29,27 @@ New Window or Settings when supported by their desktop entries. Utility results 
 another activation. The panel’s folder button selects sources; indexing then starts
 at login through a user service.
 
-## Quickshell interface (NyxOS)
+## Quickshell interface
 
-With Nyx Shell Core, Glimpse's panel is drawn by the shared Quickshell runtime
-(`quickshell/Glimpse`, loaded by `nyx-shell-qs` from `share/nyx-shell/components`) and its
-search runs in `nyx-glimpse-backend` (`data/nyx-glimpse-backend.service`), which serves
-results and activation over `$XDG_RUNTIME_DIR/nyx-glimpse/ui.sock`. Shell Core shows it
-as a transient overlay with the keyboard, on the active screen, over fullscreen windows,
-and gives focus back when it closes. `nyx-glimpse --toggle` (Super+Space) goes to that
-panel while it runs and to the GTK panel otherwise; `GLIMPSE_UI=gtk` always picks GTK.
-On Omarchy without Shell Core nothing changes: the GTK panel is Glimpse's.
+Where Nyx Shell's Quickshell runtime runs (`nyx-shell-qs`: on NyxOS with Shell Core, on
+Omarchy in its standalone mode), Glimpse's panel is drawn by it (`quickshell/Glimpse`,
+loaded from `share/nyx-shell/components`) and everything else runs in
+`nyx-glimpse-backend` (`data/nyx-glimpse-backend.service`), which serves the panel over
+`$XDG_RUNTIME_DIR/nyx-glimpse/ui.sock`. It is shown as a transient overlay with the
+keyboard, on the active screen, over fullscreen windows, and gives focus back when it
+closes. `nyx-glimpse --toggle` (Super+Space), `--query`, `--plugins`, `--add-folder` and
+`--add-plugin` go to it while it runs and to the GTK panel otherwise; `GLIMPSE_UI=gtk`
+always picks GTK.
 
-The QML panel has search, keyboard navigation, every result kind, and the second
-Enter for results that ask first. Previews, the action panel, `pw` and `cb` stay in
-the GTK panel for now.
+The install sets it up when the runtime is there. `nyx-glimpse ui gtk` goes back to the
+GTK panel (and stops the backend); `nyx-glimpse ui qml` comes back. The choice is kept.
+
+The Quickshell panel does what the GTK one does: results under category headings, the
+count, key hints, the preview pane (app cards, file text with code colours, pictures, PDF
+pages, audio and video played in place, plugin previews), the calculator, the action panel
+(Ctrl+K) with aliases, favorites and plugin actions, the history (Up on an empty search),
+`pw` and `cb`, the plugin window with plugin settings, and adding a folder through the
+desktop's folder chooser.
 
 ## Local AI
 
