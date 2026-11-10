@@ -424,6 +424,16 @@ fn bind_capture_library(cmd: &mut Command, plugin_id: &str, dir: &Path) -> Optio
     Some("/capture-library/capture.sqlite")
 }
 
+/// Read-only mount of Nyx Agents' session list for the Nyx Agents plugin.
+fn bind_agents_hub(cmd: &mut Command, plugin_id: &str) -> Option<&'static str> {
+    let hub = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("nyx-agents/hub.json");
+    if plugin_id != "nyx-agents" || !hub.is_file() {
+        return None;
+    }
+    cmd.arg("--ro-bind").arg(&hub).arg("/agents-hub.json");
+    Some("/agents-hub.json")
+}
+
 pub fn authorized(plugin: &Plugin) -> bool {
     plugin.grant.enabled
         && plugin.grant.version == plugin.manifest.version
@@ -496,6 +506,9 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
         None
     };
     let capture_db = bind_capture_library(&mut cmd, &plugin.manifest.id, &capture_library_dir());
+    // Nyx Agents: its session list, one file. Not the rest of its runtime
+    // folder, which holds the sockets that drive agents.
+    let agents_hub = bind_agents_hub(&mut cmd, &plugin.manifest.id);
     // Mail, Calendar and Reminders: one database file each, nothing else of theirs.
     let pim_db = crate::pim::bind(&mut cmd, &plugin.manifest.id, &xdg_data_home());
     cmd.args([
@@ -514,6 +527,9 @@ fn sandbox(p: &Paths, plugin: &Plugin, read_one: Option<&Path>) -> Result<Comman
     ]);
     if let Some(db) = news_db {
         cmd.args(["--setenv", "NYX_NEWS_DB", db]);
+    }
+    if let Some(hub) = agents_hub {
+        cmd.args(["--setenv", "NYX_AGENTS_HUB", hub]);
     }
     if let Some((key, db)) = pim_db {
         cmd.args(["--setenv", key, db]);
@@ -682,12 +698,27 @@ pub fn valid_action(p: &Paths, plugin: &Plugin, a: &Action) -> bool {
         Action::Open { path } => {
             p.load().is_ok_and(|c| config::allowed(&c, path)) && plugin.grant.permissions.read.iter().any(|r| path.starts_with(r))
         }
-        Action::Url { url } => {
-            plugin.grant.permissions.network && (url.starts_with("https://") || url.starts_with("http://")) && url.len() < 4096
-        }
+        Action::Url { url } => allowed_url(&plugin.manifest.id, plugin.grant.permissions.network, url),
         Action::Activate { token } => token.len() <= 4096,
     }
 }
+/// A URL a plugin may open: HTTP(S) with network consent, or its own Nyx
+/// app's scheme (the `nyx-agents` plugin may open `nyx-agents://…`, and no
+/// other app's), which reaches only that app's own handler.
+pub fn allowed_url(plugin_id: &str, network: bool, url: &str) -> bool {
+    if url.len() >= 4096 {
+        return false;
+    }
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return network;
+    }
+    plugin_id.starts_with("nyx-")
+        && valid_id(plugin_id)
+        && url.strip_prefix(plugin_id).and_then(|rest| rest.strip_prefix("://")).is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_graphic() && b != b'\\' && b != b'"' && b != b'\'')
+        })
+}
+
 /// Host-side Capture commands. The plugin cannot spawn GTK; Glimpse launches `nyx-capture` instead.
 pub fn capture_host_args(plugin_id: &str, token: &str) -> Option<&'static str> {
     if plugin_id != "nyx-capture" {
@@ -911,6 +942,22 @@ mod notes_action_tests {
                 .is_err()
         );
         assert!(notes_host_args(r#"{"api_version":1,"op":"create","vault":"/home/test/Notes","title":"../escape"}"#).is_err());
+    }
+}
+#[cfg(test)]
+mod url_tests {
+    use super::allowed_url;
+
+    #[test]
+    fn plugins_open_only_the_web_with_consent_or_their_own_app() {
+        assert!(allowed_url("nyx-agents", false, "nyx-agents://session/03c6"));
+        assert!(!allowed_url("nyx-agents", false, "nyx-mail://compose?to=x"), "another app's scheme");
+        assert!(!allowed_url("nyx-agents", false, "nyx-agents://"));
+        assert!(!allowed_url("nyx-agents", false, "nyx-agents://session/a b"));
+        assert!(!allowed_url("quick-tools", false, "quick-tools://x"), "only Nyx app plugins");
+        assert!(!allowed_url("nyx-agents", false, "file:///etc/passwd"));
+        assert!(!allowed_url("nyx-agents", false, "https://example.com"), "the web still needs consent");
+        assert!(allowed_url("nyx-agents", true, "https://example.com"));
     }
 }
 #[cfg(test)]

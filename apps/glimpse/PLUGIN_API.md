@@ -47,7 +47,9 @@ Disabling, removing, or changing grants invalidates and cancels outstanding work
 - **Search / commands:** `search` receives query and limit. Return an array of
   `{id,title,subtitle,action}`. The host displays at most ten results per plugin.
 - **Actions:** `copy` carries `text`; `open` carries a granted `path`; `url` carries
-  HTTP(S) `url` and requires network consent. `activate` carries a plugin `token`.
+  an HTTP(S) `url`, which requires network consent, or a URI in the plugin's own Nyx
+  app scheme (plugin `nyx-agents` may open `nyx-agents://…`, no other app's), which
+  needs no consent and reaches only that app. `activate` carries a plugin `token`.
   The host calls `activate` only after user selection; its reply must be a concrete
   copy/open/url action. All plugin computation stays in its sandbox.
 - **Previews:** `preview` receives `result_id`, title, and query. Return `{text}`.
