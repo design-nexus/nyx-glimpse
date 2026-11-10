@@ -14,8 +14,9 @@
 //! plugins, shared actions, contents by meaning). A newer query cancels the rest.
 
 use crate::{
+    clipboard,
     config::Paths,
-    index, learning, plugins,
+    index, learning, passwords, plugins,
     providers::{self, SearchContext, Target},
     query, semantic, utility,
 };
@@ -99,6 +100,11 @@ fn file_row(path: PathBuf, hit: &Value) -> Row {
     }
 }
 
+/// `pw …` and `cb …`: for Nyx Passwords and Nyx Clipboard only.
+fn vault_query(q: &str) -> bool {
+    passwords::parse(q).is_some() || clipboard::parse(q).is_some()
+}
+
 fn folder_of(path: &Path) -> String {
     let parent = path.parent().unwrap_or(path);
     match std::env::var_os("HOME").map(PathBuf::from).and_then(|home| parent.strip_prefix(home).ok().map(Path::to_owned)) {
@@ -152,6 +158,10 @@ impl Engine {
         if q.is_empty() {
             return Ok((vec![], String::new()));
         }
+        // The vault and the clipboard history: never searched anywhere else.
+        if vault_query(q) {
+            return Ok((vec![], "Passwords and clipboard search are in the full Glimpse panel for now".into()));
+        }
         if utility::intent(q) != utility::Intent::Search {
             return match utility::answers_local(p, q, &c, cancelled) {
                 Ok(answers) => Ok((
@@ -186,7 +196,11 @@ impl Engine {
             rows.push(provider_row(candidate));
         }
         if let Ok(hits) = providers::Provider::discover(&mut self.files, &ctx) {
-            rows.extend(hits.into_iter().map(provider_row));
+            for row in hits.into_iter().map(provider_row) {
+                if !rows.iter().any(|r| r.id == row.id) {
+                    rows.push(row);
+                }
+            }
         }
         if self.db.is_none() {
             self.db = index::open(p).ok();
@@ -194,7 +208,14 @@ impl Engine {
         if let Some(conn) = &self.db
             && let Ok(hits) = index::content_search_in(conn, p, &c, q)
         {
-            rows.extend(hits.into_iter().map(|(file, info)| file_row(file.path, &info)));
+            for row in hits.into_iter().map(|(file, info)| file_row(file.path, &info)) {
+                // Found by name too: that row says where it matched.
+                match rows.iter_mut().find(|r| r.id == row.id) {
+                    Some(r) if r.reason.is_empty() => r.reason = row.reason,
+                    Some(_) => {}
+                    None => rows.push(row),
+                }
+            }
         }
         for (name, cmd) in [("Lock screen", "lock"), ("Log out", "logout"), ("Reboot", "reboot"), ("Shut down", "shutdown")] {
             if query::name_rank(name, q).is_some() {
@@ -217,7 +238,7 @@ impl Engine {
         let p = &self.paths;
         let c = p.load()?;
         let q = q.trim();
-        if q.is_empty() || utility::intent(q) != utility::Intent::Search {
+        if q.is_empty() || vault_query(q) || utility::intent(q) != utility::Intent::Search {
             return Ok((vec![], String::new()));
         }
         let profile = learning::Profile::load(p, &c).unwrap_or_default();
@@ -326,7 +347,22 @@ pub fn activate(p: &Paths, row: &Row, confirmed: bool) -> Result<Done> {
                 bail!("plugin permission revoked");
             }
             let action = match action {
-                plugins::Action::Activate { token } => plugins::activate(p, id, token)?,
+                // Notes, Capture, Mail, Calendar and Reminders run in Glimpse, not the plugin.
+                plugins::Action::Activate { token } => {
+                    if let Some(done) = plugins::notes_host_action(p, id, token) {
+                        done?;
+                        return Ok(Done::Closed);
+                    }
+                    if let Some(flag) = plugins::capture_host_args(id, token) {
+                        plugins::spawn_capture(flag)?;
+                        return Ok(Done::Closed);
+                    }
+                    if let Some(done) = crate::pim::host_action(p, id, token) {
+                        done?;
+                        return Ok(Done::Closed);
+                    }
+                    plugins::activate(p, id, token)?
+                }
                 other => other.clone(),
             };
             match action {
@@ -379,10 +415,13 @@ fn interface_connected(link: &nyx_ui_link::Link) -> bool {
     })
 }
 
+/// The generation on show, its query and its rows.
+type Shown = (u64, String, HashMap<String, Row>);
+
 /// Serve the interface until the process ends.
 pub fn serve(p: Paths) -> Result<()> {
     let generation = Arc::new(AtomicU64::new(0));
-    let rows: Arc<Mutex<(u64, HashMap<String, Row>)>> = Arc::default();
+    let rows: Arc<Mutex<Shown>> = Arc::default();
     let panel = Arc::new(Mutex::new((false, 0u64)));
     let (jobs, job_rx) = mpsc::channel::<(u64, String)>();
     let link_slot: Arc<Mutex<Option<Arc<nyx_ui_link::Link>>>> = Arc::default();
@@ -431,16 +470,16 @@ pub fn serve(p: Paths) -> Result<()> {
                     let g = req.body["generation"].as_u64().unwrap_or(0);
                     let id = req.body["id"].as_str().unwrap_or("").to_string();
                     let confirmed = req.body["confirmed"].as_bool().unwrap_or(false);
-                    let row = {
+                    let found = {
                         let rows = rows_h.lock().unwrap();
-                        (rows.0 == g).then(|| rows.1.get(&id).cloned()).flatten()
+                        (rows.0 == g).then(|| rows.2.get(&id).cloned().map(|row| (row, rows.1.clone()))).flatten()
                     };
-                    let Some(row) = row else { return req.err("stale", "That result is gone; search again") };
+                    let Some((row, query)) = found else { return req.err("stale", "That result is gone; search again") };
                     let p = paths_h.clone();
                     std::thread::spawn(move || match activate(&p, &row, confirmed) {
                         Ok(Done::Closed) => {
                             if learning::eligible_id(&row.id) {
-                                let _ = learning::record(&p, &row.id, "");
+                                let _ = learning::record(&p, &row.id, &query);
                             }
                             req.ok(json!({"done": true}))
                         }
@@ -463,7 +502,7 @@ pub fn serve(p: Paths) -> Result<()> {
         if generation.load(Ordering::SeqCst) != g {
             return;
         }
-        *rows.lock().unwrap() = (g, found.iter().map(|r| (r.id.clone(), r.clone())).collect());
+        *rows.lock().unwrap() = (g, q.to_string(), found.iter().map(|r| (r.id.clone(), r.clone())).collect());
         link.publish(
             "results",
             json!({"generation": g, "query": q, "rows": found.iter().map(Row::json).collect::<Vec<_>>(), "status": status, "complete": complete}),
@@ -536,6 +575,11 @@ mod tests {
         assert!(status.is_empty());
         assert!(rows.iter().any(|r| r.kind == "app" && r.title == "Reports"), "{rows:?}");
         assert!(rows.iter().any(|r| r.kind == "file" && r.title == "quarterly-report.txt"), "{rows:?}");
+        assert_eq!(rows.iter().filter(|r| r.title == "quarterly-report.txt").count(), 1, "listed once: {rows:?}");
+        for q in ["pw report", "cb report"] {
+            assert!(engine.fast(q, &|| false).unwrap().0.is_empty(), "{q} searches nothing else");
+            assert!(engine.slow(q, &|| false).unwrap().0.is_empty(), "{q} searches nothing else");
+        }
         let (rows, _) = engine.fast("2+2", &|| false).unwrap();
         assert_eq!(rows[0].kind, "answer");
         let reboot = engine.fast("reboot", &|| false).unwrap().0.into_iter().find(|r| r.id == "system:reboot").unwrap();
