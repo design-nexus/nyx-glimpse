@@ -138,6 +138,9 @@ FocusScope {
             required property int index
             readonly property var e: modelData.event || null
             readonly property bool chosen: e !== null && panel.eventRows[panel.picked] === index
+            Accessible.role: e ? Accessible.ListItem : Accessible.Heading
+            Accessible.name: e ? (e.title || "Untitled") + ", " + panel.time(e) + (e.location ? ", " + e.location : "") : (modelData.heading || "")
+            Accessible.selected: chosen
             width: list.width
             height: e ? 46 : 28
             Label {

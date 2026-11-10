@@ -296,15 +296,24 @@ impl Commands {
         let text = q.trim_start();
         let first = resolve::split_words(text).into_iter().next()?;
         let entry = catalog.app(&first)?;
-        let panel = entry.app.panel.as_ref().filter(|p| self.panels.contains(&p.id))?;
         let rest = text[text.find(char::is_whitespace).unwrap_or(text.len())..].trim().to_string();
+        self.offer(entry, rest)
+    }
+
+    /// The panel of the app with ID `app_id`, as pinned: no words.
+    pub fn pinned(&self, catalog: &Catalog, app_id: &str) -> Option<PanelOffer> {
+        self.offer(catalog.apps.iter().find(|e| e.app.app == app_id)?, String::new())
+    }
+
+    fn offer(&self, entry: &nyx_actions::catalog::Entry, query: String) -> Option<PanelOffer> {
+        let panel = entry.app.panel.as_ref().filter(|p| self.panels.contains(&p.id))?;
         let available = entry.running.is_some() || entry.app.activation == nyx_actions::Activation::Dbus;
         Some(PanelOffer {
             app: entry.app.name.clone(),
             app_id: entry.app.app.clone(),
             icon: if entry.app.icon.is_empty() { "system-run-symbolic".into() } else { entry.app.icon.clone() },
             panel: panel.id.clone(),
-            query: rest,
+            query,
             topics: panel.topics.clone(),
             size: serde_json::to_value(&panel.size).unwrap_or(Value::Null),
             available,

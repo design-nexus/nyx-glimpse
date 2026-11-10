@@ -118,6 +118,10 @@ FocusScope {
             height: 52
             radius: Style.radiusSmall
             color: index === panel.picked ? Style.selected : "transparent"
+            Accessible.role: Accessible.ListItem
+            Accessible.name: panel.title(modelData.path)
+            Accessible.description: modelData.snippet || ""
+            Accessible.selected: index === panel.picked
             Icon {
                 x: 10
                 y: 9

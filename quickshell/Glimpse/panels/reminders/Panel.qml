@@ -135,12 +135,15 @@ FocusScope {
             height: 44
             radius: Style.radiusSmall
             color: index === panel.picked ? Style.selected : "transparent"
+            Accessible.role: Accessible.ListItem
+            Accessible.name: [modelData.title, panel.due(modelData), modelData.overdue ? "overdue" : "", modelData.list_name].filter(s => s).join(", ")
+            Accessible.selected: index === panel.picked
             IconButton {
                 id: check
                 x: 4
                 anchors.verticalCenter: parent.verticalCenter
                 icon: "checkbox-symbolic"
-                tooltip: "Mark done (Space)"
+                tooltip: "Mark " + row.modelData.title + " done (Space)"
                 onClicked: panel.complete(row.modelData)
             }
             Column {

@@ -15,6 +15,13 @@ Item {
     readonly property bool heading: index === 0 || rows[index - 1].order !== modelData.order
     readonly property bool double: modelData.subtitle !== ""
 
+    // For screen readers: the result, its category where a new one starts, and why it
+    // can't run now.
+    Accessible.role: Accessible.ListItem
+    Accessible.name: [heading ? modelData.category : "", modelData.title, modelData.subtitle, modelData.reason || ""].filter(s => s).join(", ")
+    Accessible.selectable: true
+    Accessible.selected: selected
+
     signal clicked
     signal pressedRow
 

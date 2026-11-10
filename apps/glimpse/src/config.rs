@@ -34,7 +34,18 @@ pub struct Config {
     pub theme: String,
     pub rates_date: String,
     pub rates: BTreeMap<String, f64>,
+    /// Mini-app panels kept on screen after Glimpse closes, in the order pinned.
+    pub pinned: Vec<Pinned>,
 }
+/// A pinned panel: the app (by ID) and the monitor it was on, for next time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pinned {
+    pub app: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub monitor: String,
+}
+/// At most this many pinned panels.
+pub const MAX_PINNED: usize = 6;
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -61,6 +72,7 @@ impl Default for Config {
             theme: "tokyo-night".into(),
             rates_date: String::new(),
             rates: BTreeMap::new(),
+            pinned: vec![],
         }
     }
 }
@@ -138,6 +150,10 @@ pub fn atomic_write(p: &Path, bytes: &[u8]) -> Result<()> {
     }
     result
 }
+/// A D-Bus style app ID: `io.github.design_nexus.nyx.Music`.
+fn app_id(id: &str) -> bool {
+    id.len() <= 255 && id.contains('.') && id.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+}
 pub fn validate(c: &Config) -> Result<()> {
     let mut used = Vec::new();
     for key in [&c.action_key, &c.favorite_key] {
@@ -162,6 +178,13 @@ pub fn validate(c: &Config) -> Result<()> {
         || c.aliases.keys().chain(c.favorites.iter()).any(|id| !crate::learning::eligible_id(id))
     {
         bail!("Invalid favorites or aliases");
+    }
+    if c.pinned.len() > MAX_PINNED
+        || c.pinned.iter().any(|p| {
+            !app_id(&p.app) || p.monitor.len() > 64 || !p.monitor.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+    {
+        bail!("Invalid pinned panels");
     }
 
     for key in [&c.search_key, &c.menu_key] {
@@ -309,4 +332,24 @@ pub fn panel_shortcut(value: &str) -> Result<(String, u8)> {
         bail!("Use Control or Alt with a letter, number, or F1–F12");
     }
     Ok((key, modifiers))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_panels_are_checked() {
+        let mut c = Config::default();
+        c.pinned = vec![Pinned { app: "io.github.design_nexus.nyx.Music".into(), monitor: "eDP-2".into() }];
+        validate(&c).unwrap();
+        let toml = toml::to_string_pretty(&c).unwrap();
+        assert_eq!(toml::from_str::<Config>(&toml).unwrap().pinned, c.pinned);
+        c.pinned[0].monitor = "eDP 2; rm".into();
+        assert!(validate(&c).is_err(), "a monitor is a connector name");
+        c.pinned[0] = Pinned { app: "../../evil".into(), monitor: String::new() };
+        assert!(validate(&c).is_err(), "an app is an app ID");
+        c.pinned = (0..=MAX_PINNED).map(|i| Pinned { app: format!("io.github.design_nexus.nyx.App{i}"), monitor: String::new() }).collect();
+        assert!(validate(&c).is_err(), "at most six");
+    }
 }

@@ -137,6 +137,8 @@ FocusScope {
     // What a call that asks first will do, over the panel.
     Rectangle {
         visible: host.pending !== null
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: host.pending ? host.pending.message + ". Enter goes ahead, Escape doesn't." : ""
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom

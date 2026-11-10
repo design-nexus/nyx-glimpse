@@ -11,7 +11,9 @@
 //! - `plugins`: the installed plugins, the catalog and the plugin window's note;
 //! - `manager`: `{open, serial}`, whether the plugin window shows;
 //! - `panel:<app-id>:<topic>`: an app's live state for its mini-app panel,
-//!   `{state}` or `{error}`, followed only while a panel subscribes.
+//!   `{state}` or `{error}`, followed only while a panel subscribes;
+//! - `pins`: `{pins: [offer + {monitor}]}`, the pinned panels, in the order pinned, with
+//!   whether each app can answer now.
 //!
 //! Events: `message {text}` for the status line, `rerun {}` to search again.
 //!
@@ -22,7 +24,9 @@
 //! `History`, `CopyAnswer`, `Show {query?}`, `Hide`, `Toggle`, `OpenPlugins`,
 //! `ClosePlugins`, `PluginOp`, `PluginSettings`, `PluginConfigure`, `AddFolder`,
 //! `OpenSettings`, and for panels `PanelRun {app, action, arguments, confirmed}` (only
-//! that app's actions; replies `{result}` or `{ask}`) and `PanelOpen {app, arguments}`.
+//! that app's actions; replies `{result}` or `{ask}`), `PanelOpen {app, arguments}`,
+//! `Pin {app, monitor?}` (only an app with one of Glimpse's panels; `monitor` is where
+//! Shell Core put it, kept for next time) and `Unpin {app}`.
 //!
 //! Only Glimpse's own programs connect: its Quickshell panel and `nyx-glimpse`
 //! (`NYX_GLIMPSE_ALLOW_ANY=1` lets a test copy take any same-user client).
@@ -118,7 +122,7 @@ impl Row {
             Item::System(_) | Item::Provider(_) => vec![(enter, "Run")],
             Item::Password(p) => p.hints(),
             Item::Clipboard(c) => c.hints(),
-            Item::Panel(_) => vec![(enter, "Use"), (&["Ctrl", "Enter"][..], "Open in app")],
+            Item::Panel(_) => vec![(enter, "Use"), (&["Ctrl", "Enter"][..], "Open in app"), (&["Ctrl", "P"][..], "Pin")],
             Item::Command(c) => {
                 let run = if !c.missing.is_empty() && c.available {
                     "Continue"
@@ -158,8 +162,7 @@ impl Row {
                 _ => "",
             },
             "panel": match &self.item {
-                Item::Panel(o) => json!({"id": o.panel, "app": o.app_id, "name": o.app, "icon": o.icon, "query": o.query,
-                    "topics": o.topics, "size": o.size, "available": o.available, "reason": o.reason}),
+                Item::Panel(o) => offer_json(o),
                 _ => Value::Null,
             },
         })
@@ -942,6 +945,12 @@ fn glimpse_peer(peer: &nyx_ui_link::Peer) -> bool {
 
 /// A panel's topic gained its first viewer or lost its last: follow the app's state
 /// while someone looks (`panel:<app-id>:<topic>`), and stop after.
+/// A panel offer as the interface reads it.
+fn offer_json(o: &PanelOffer) -> Value {
+    json!({"id": o.panel, "app": o.app_id, "name": o.app, "icon": o.icon, "query": o.query,
+        "topics": o.topics, "size": o.size, "available": o.available, "reason": o.reason})
+}
+
 fn panel_watch(shared: &Arc<Shared>, topic: &str, viewers: usize) {
     let Some((app, name)) = topic.strip_prefix("panel:").and_then(|t| t.rsplit_once(':')) else { return };
     let mut live = shared.live.lock().unwrap();
@@ -954,7 +963,8 @@ fn panel_watch(shared: &Arc<Shared>, topic: &str, viewers: usize) {
         }
         return;
     }
-    if live.contains_key(topic) {
+    // One that ended (the app said no, or went away) starts again for a new viewer.
+    if live.get(topic).is_some_and(|t| !t.is_finished()) {
         return;
     }
     let Some(link) = shared.link() else { return };
@@ -1040,6 +1050,42 @@ impl Shared {
         if let Some(link) = self.link() {
             link.publish("config", json!({"preview": c.preview, "action_key": c.action_key, "favorite_key": c.favorite_key}));
         }
+    }
+    /// The pinned panels as the catalog has them now; apps that are gone are left out.
+    fn publish_pins(&self) {
+        let pinned = self.paths.load().unwrap_or_default().pinned;
+        let catalog = if pinned.is_empty() { None } else { Some(self.commands.catalog(false)) };
+        let pins: Vec<Value> = pinned
+            .iter()
+            .filter_map(|p| {
+                let mut v = offer_json(&self.commands.pinned(catalog.as_ref()?, &p.app)?);
+                v["monitor"] = json!(p.monitor);
+                Some(v)
+            })
+            .collect();
+        if let Some(link) = self.link() {
+            link.publish("pins", json!({ "pins": pins }));
+        }
+    }
+    /// Pin `app`'s panel (or note where it is), or unpin it.
+    fn pin(&self, app: &str, on: bool, monitor: Option<&str>) -> Result<()> {
+        let mut c = self.paths.load()?;
+        if on {
+            if self.commands.pinned(&self.commands.catalog(false), app).is_none() {
+                return Err(anyhow!("{app} has no panel to pin"));
+            }
+            let full = c.pinned.len() >= config::MAX_PINNED;
+            match c.pinned.iter_mut().find(|p| p.app == app) {
+                Some(p) => p.monitor = monitor.unwrap_or(&p.monitor).to_string(),
+                None if full => return Err(anyhow!("{} panels are pinned already", config::MAX_PINNED)),
+                None => c.pinned.push(config::Pinned { app: app.to_string(), monitor: monitor.unwrap_or_default().to_string() }),
+            }
+        } else {
+            c.pinned.retain(|p| p.app != app);
+        }
+        self.paths.save(&c)?;
+        self.publish_pins();
+        Ok(())
     }
     fn message(&self, text: &str) {
         if let Some(link) = self.link() {
@@ -1507,6 +1553,15 @@ pub fn serve(p: Paths) -> Result<()> {
                         Err(e) => req.err(e.kind.as_str(), e.message),
                     });
                 }
+                "Pin" | "Unpin" => {
+                    let on = op == "Pin";
+                    let app = b["app"].as_str().unwrap_or("").to_string();
+                    let monitor = b["monitor"].as_str().map(str::to_string);
+                    std::thread::spawn(move || match shared.pin(&app, on, monitor.as_deref()) {
+                        Ok(()) => req.ok(json!({})),
+                        Err(e) => req.err("failed", format!("{e:#}")),
+                    });
+                }
                 "PanelOpen" => {
                     let app = b["app"].as_str().unwrap_or("").to_string();
                     let arguments = b["arguments"].as_object().cloned().unwrap_or_default();
@@ -1529,7 +1584,17 @@ pub fn serve(p: Paths) -> Result<()> {
     link.publish("results", json!({"generation": 0, "query": "", "rows": [], "status": "", "complete": true, "calc": null}));
     shared.publish_config();
     shared.publish_plugins();
+    link.publish("pins", json!({"pins": []}));
     watch_settings(shared.clone());
+    // Pinned panels: now, then every 15 s while there are any, so one whose app opens
+    // or closes follows it.
+    let pins = shared.clone();
+    std::thread::spawn(move || {
+        loop {
+            pins.publish_pins();
+            std::thread::sleep(Duration::from_secs(15));
+        }
+    });
     // Which apps run, asked once now, so the first search already knows.
     let warm = shared.commands.clone();
     std::thread::spawn(move || drop(warm.catalog(true)));
@@ -1616,6 +1681,7 @@ fn watch_settings(shared: Arc<Shared>) {
             while rx.try_recv().is_ok() {}
             shared.publish_config();
             shared.publish_plugins();
+            shared.publish_pins();
             shared.rerun();
         }
     });

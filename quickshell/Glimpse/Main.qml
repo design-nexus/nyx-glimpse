@@ -21,7 +21,7 @@ Scope {
     BackendClient {
         id: backend
         app: "nyx-glimpse"
-        topics: ["panel", "results", "config", "plugins", "manager"]
+        topics: ["panel", "results", "config", "plugins", "manager", "pins"]
         // A backend that started again knows no search: the one on show is sent again.
         onReconnected: if (panel.text.trim() !== "")
             root.search(panel.text)
@@ -63,6 +63,11 @@ Scope {
         armed = "";
         message = "";
         backend.request("Query", { text: text, generation: generation }, null);
+    }
+    // Pin the shown app panel (it stays after Glimpse closes), or unpin it.
+    function togglePin(offer) {
+        const on = !pinsView.pinned(offer.app);
+        backend.request(on ? "Pin" : "Unpin", { app: offer.app }, (ok, err) => root.say(err ? err.msg : on ? "Pinned " + offer.name + ": it stays after Glimpse closes" : "Unpinned " + offer.name));
     }
     function say(text) {
         message = text;
@@ -219,6 +224,12 @@ Scope {
         backend: backend
     }
 
+    Pins {
+        id: pinsView
+        backend: backend
+        onSaid: text => root.say(text)
+    }
+
     // Tests (GLIMPSE_TEST_IPC=1): `qs ipc --pid N call glimpse <fn>` stands in for the
     // keyboard on a virtual output.
     IpcHandler {
@@ -243,6 +254,10 @@ Scope {
         // One of the shown mini-app panel's own functions, as its key would (`add`).
         function mini(fn: string): void {
             panel.miniApp(fn);
+        }
+        function pin(): void {
+            if (panel.shownPanel())
+                root.togglePin(panel.shownPanel());
         }
     }
 }

@@ -11,3 +11,9 @@ to the app only through the host (`PanelHost.qml`): `host.query`, `host.topic(na
 `host.run(action, arguments, done)`, `host.open(arguments)`, `host.say(text)` and
 `host.back()`. It is created when its result is selected and destroyed when it isn't,
 which ends its topics; it draws with `Nyx.Ui` only.
+
+Ctrl+P pins the shown panel (and unpins it): it stays on screen after Glimpse closes, in
+`Pins.qml`, as a persistent overlay Shell Core pins and places (`PinOverlay`; Nyx.Shell's
+standalone mode on Omarchy). The backend keeps the pins in Glimpse's settings
+(`pinned`, at most six) and publishes them on `pins`; a pinned panel is the same QML
+with the same host, and follows its topics only while it shows.

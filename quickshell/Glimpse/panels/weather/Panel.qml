@@ -112,6 +112,8 @@ FocusScope {
                 model: panel.now.days || []
                 delegate: Card {
                     required property var modelData
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: panel.day(modelData.date) + ", " + modelData.condition + ", " + modelData.high + " / " + modelData.low + (modelData.rain_pct > 0 ? ", " + modelData.rain_pct + "% rain" : "")
                     width: (parent.width - 6 * 4) / 5
                     height: 104
                     Column {

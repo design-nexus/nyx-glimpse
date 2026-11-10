@@ -42,6 +42,9 @@ Item {
     function openHistory() {
         actions.openHistory();
     }
+    function shownPanel() {
+        return preview.panelOffer;
+    }
     function miniApp(fn) {
         preview.panelCall(fn);
     }
@@ -103,6 +106,8 @@ Item {
             g.select(e.key === Qt.Key_Home ? 0 : g.rows.length - 1);
         } else if (ctrl && e.key === Qt.Key_G) {
             g.select(g.selected + ((e.modifiers & Qt.ShiftModifier) ? -1 : 1));
+        } else if (ctrl && e.key === Qt.Key_P && preview.panelOffer) {
+            g.togglePin(preview.panelOffer);
         } else if (ctrl && e.key === Qt.Key_P && preview.playing !== undefined && preview.hasMedia) {
             preview.togglePlayback();
         } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
@@ -164,6 +169,8 @@ Item {
             }
             TextInput {
                 id: input
+                Accessible.role: Accessible.EditableText
+                Accessible.name: "Search"
                 anchors.left: searchIcon.right
                 anchors.leftMargin: 10
                 anchors.right: parent.right
@@ -203,6 +210,8 @@ Item {
 
             ListView {
                 id: list
+                Accessible.role: Accessible.List
+                Accessible.name: "Results"
                 visible: !content.empty
                 width: 300
                 height: parent.height
