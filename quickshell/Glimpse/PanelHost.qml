@@ -78,7 +78,10 @@ FocusScope {
         watched = [];
     }
     onOfferChanged: watchAll()
-    Component.onCompleted: watchAll()
+    Component.onCompleted: {
+        watchAll();
+        loadPanel();
+    }
     Component.onDestruction: unwatchAll()
 
     readonly property var states: watched.map(t => backend.state[t] || { loading: true })
@@ -102,14 +105,21 @@ FocusScope {
         }
     }
 
+    // The panel gets the host before it completes, so its first steps can use it.
+    readonly property string panelId: offer ? offer.id : ""
+    onPanelIdChanged: loadPanel()
+    function loadPanel() {
+        if (panelId === "")
+            body.source = "";
+        else
+            body.setSource(Qt.resolvedUrl("panels/" + panelId + "/Panel.qml"), { host: host });
+    }
     Loader {
         id: body
         anchors.fill: parent
         focus: true
         asynchronous: true
         visible: status === Loader.Ready && !host.failed
-        source: host.offer ? Qt.resolvedUrl("panels/" + host.offer.id + "/Panel.qml") : ""
-        onLoaded: item.host = host
     }
 
     StateView {
