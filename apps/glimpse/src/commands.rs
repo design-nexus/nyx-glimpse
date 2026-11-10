@@ -61,7 +61,7 @@ impl Command {
             description: a.description.clone(),
             arguments,
             missing,
-            usage: usage(&entry.app.namespaces[0], a),
+            usage: usage(a.namespace(), a),
             risk: a.risk,
             asks: a.asks(),
             available: listed.available,
@@ -264,7 +264,7 @@ impl Commands {
     pub fn plain(&self, id: &str) -> Option<Command> {
         let catalog = self.catalog(false);
         let (entry, listed) = catalog.find(id)?;
-        let fill = format!("{} {} ", entry.app.namespaces[0], listed.action.verb().replace('.', " "));
+        let fill = format!("{} {} ", listed.action.namespace(), listed.action.verb().replace('.', " "));
         Some(Command::new(entry, listed, Map::new(), fill, false))
     }
 
@@ -277,7 +277,7 @@ impl Commands {
 
 /// The mini-app panels Glimpse ships (`quickshell/Glimpse/panels/<id>/Panel.qml`). An
 /// app's manifest can only pick one of these; nothing else runs in the shell.
-pub const PANELS: &[&str] = &["music", "home", "files", "calendar", "reminders", "notes", "weather", "containers"];
+pub const PANELS: &[&str] = &["music", "home", "files", "calendar", "reminders", "notes", "weather", "containers", "devices"];
 
 /// An app's panel, offered for a query that starts with the app's name.
 #[derive(Clone, Debug, PartialEq)]
@@ -301,6 +301,11 @@ impl Commands {
         let text = q.trim_start();
         let first = resolve::split_words(text).into_iter().next()?;
         let entry = catalog.app(&first)?;
+        // An app with several namespaces (Settings: settings, devices) shows its panel for
+        // the word that names it only.
+        if entry.app.namespaces.len() > 1 && entry.app.panel.as_ref().is_some_and(|p| !p.id.eq_ignore_ascii_case(&first)) {
+            return None;
+        }
         let rest = text[text.find(char::is_whitespace).unwrap_or(text.len())..].trim().to_string();
         self.offer(entry, rest)
     }
@@ -313,8 +318,15 @@ impl Commands {
     fn offer(&self, entry: &nyx_actions::catalog::Entry, query: String) -> Option<PanelOffer> {
         let panel = entry.app.panel.as_ref().filter(|p| self.panels.contains(&p.id))?;
         let available = entry.running.is_some() || entry.app.activation == nyx_actions::Activation::Dbus;
+        // An app with several namespaces names its panel after the panel (Devices, of Settings).
+        let title = if entry.app.namespaces.len() > 1 {
+            let mut c = panel.id.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        } else {
+            entry.app.name.clone()
+        };
         Some(PanelOffer {
-            app: entry.app.name.clone(),
+            app: title,
             app_id: entry.app.app.clone(),
             icon: if entry.app.icon.is_empty() { "system-run-symbolic".into() } else { entry.app.icon.clone() },
             panel: panel.id.clone(),
@@ -458,7 +470,7 @@ impl Provider for Fuzzy {
                 Candidate {
                     id: format!("action:{}", a.id),
                     title: a.title.clone(),
-                    subtitle: format!("{} · {}", e.app.name, usage(&e.app.namespaces[0], a)),
+                    subtitle: format!("{} · {}", e.app.name, usage(a.namespace(), a)),
                     keywords: format!(
                         "{} {} {} {} {}",
                         e.app.name,
