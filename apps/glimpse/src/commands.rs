@@ -272,7 +272,7 @@ impl Commands {
 
 /// The mini-app panels Glimpse ships (`quickshell/Glimpse/panels/<id>/Panel.qml`). An
 /// app's manifest can only pick one of these; nothing else runs in the shell.
-pub const PANELS: &[&str] = &["music"];
+pub const PANELS: &[&str] = &["music", "home"];
 
 /// An app's panel, offered for a query that starts with the app's name.
 #[derive(Clone, Debug, PartialEq)]
