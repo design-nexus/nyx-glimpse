@@ -10,10 +10,15 @@ Item {
     required property var glimpse
     required property var backend
     readonly property alias text: input.text
-    readonly property int expandedHeight: 460
     readonly property bool expanded: glimpse.expanded
+    property int maxWidth: 10000
+    property int maxHeight: 10000
+    // A selected panel's preferred size widens and heightens the frame, within the screen.
+    readonly property var miniSize: glimpse.row && glimpse.row.kind === "panel" && glimpse.row.panel ? glimpse.row.panel.size : null
+    readonly property var preferred: miniSize && miniSize.preferred ? miniSize.preferred : null
+    readonly property int expandedHeight: Math.min(maxHeight, Math.max(460, preferred ? preferred[1] + 54 + 36 + 18 : 0))
 
-    width: 760
+    width: Math.min(maxWidth, Math.max(760, preferred ? 300 + preferred[0] + 32 : 0))
     height: expanded ? expandedHeight : 56
 
     function setText(t) {
@@ -36,6 +41,9 @@ Item {
     }
     function openHistory() {
         actions.openHistory();
+    }
+    function focusMiniApp() {
+        preview.focusPanel();
     }
 
     // A GTK accelerator ("<Control><Shift>f") against a key press.

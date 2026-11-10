@@ -98,6 +98,9 @@ Scope {
             } else if (ok.done) {
                 armed = "";
                 root.hide();
+            } else if (ok.focus) {
+                // A panel: the keyboard goes into it; Escape gives it back.
+                panel.focusMiniApp();
             } else if (ok.fill !== undefined) {
                 // A command that needs more words: the search becomes it, ready to type on.
                 armed = "";
@@ -196,6 +199,8 @@ Scope {
             backend: backend
             // Centred across; the search bar stays where the expanded panel would sit
             // centred, so results grow downwards from it.
+            maxWidth: parent.width - 48
+            maxHeight: parent.height - 48
             x: Math.round((parent.width - width) / 2)
             y: Math.max(0, Math.min(Math.round((parent.height - expandedHeight) / 2), parent.height - height))
             opacity: surface.shown ? 1 : 0

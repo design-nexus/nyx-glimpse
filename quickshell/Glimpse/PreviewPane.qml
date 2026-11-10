@@ -21,6 +21,19 @@ Item {
     signal typed(string text, int cursor)
     signal refocus
 
+    // An app's panel takes the pane while its result is selected.
+    readonly property var selectedRow: glimpse.rows.find(x => x.id === glimpse.selectedId) || null
+    readonly property var shownOffer: selectedRow && selectedRow.kind === "panel" && selectedRow.panel && selectedRow.panel.available ? selectedRow.panel : null
+    // While the next search is on its way, the last one's: typing on doesn't rebuild it.
+    property var heldOffer: null
+    readonly property var panelOffer: glimpse.current ? shownOffer : heldOffer
+    onShownOfferChanged: if (glimpse.current)
+        heldOffer = shownOffer
+    function focusPanel() {
+        if (miniApp.item)
+            miniApp.item.forceActiveFocus();
+    }
+
     function togglePlayback() {
         if (media.item)
             media.item.toggle();
@@ -57,11 +70,31 @@ Item {
         function onPreviewSerialChanged() {
             pane.load();
         }
+        function onCurrentChanged() {
+            if (pane.glimpse.current)
+                pane.heldOffer = pane.shownOffer;
+        }
     }
     onCalcChanged: load()
 
+    Loader {
+        id: miniApp
+        active: pane.panelOffer !== null && pane.glimpse.asked
+        anchors.fill: parent
+        anchors.leftMargin: 16
+        anchors.rightMargin: 16
+        anchors.topMargin: 4
+        anchors.bottomMargin: 14
+        sourceComponent: PanelHost {
+            glimpse: pane.glimpse
+            backend: pane.backend
+            offer: pane.panelOffer
+            onBack: pane.refocus()
+        }
+    }
+
     Column {
-        visible: !pane.calc
+        visible: !pane.calc && !miniApp.active
         anchors.fill: parent
         anchors.leftMargin: 16
         anchors.rightMargin: 16

@@ -204,6 +204,13 @@ Nyx apps' commands are the ones `nyx APP …` runs in a terminal, from the same 
   shows what it will do and runs on a second Enter. The app checks every call again.
 - Other searches match commands by title, alias and keyword.
 - A command's result shows in its preview: a list, its fields, or a line in the status bar.
+- An app with a Glimpse panel (`music`, `music jazz`) is listed first; while it's
+  selected, the preview is the app's compact panel with its live state. Enter moves the
+  keyboard into the panel (Escape gives it back), Ctrl+Enter opens the full app. Panels
+  are Glimpse's own QML (`quickshell/Glimpse/panels`); they reach only their app's
+  actions, checked as any other call, and its state is followed only while one shows.
+- Only Glimpse's own programs (its Quickshell panel and `nyx-glimpse`) may use the
+  backend's socket.
 
 The GTK panel keeps the earlier shared actions from Nyx AI Core (those without
 arguments). Glimpse offers `glimpse.search` (read-only file search) to AI Core while

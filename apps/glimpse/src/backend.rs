@@ -9,7 +9,9 @@
 //!   sorted into the GTK panel's categories; never an older query's over a newer one;
 //! - `config`: `{preview, action_key, favorite_key}`;
 //! - `plugins`: the installed plugins, the catalog and the plugin window's note;
-//! - `manager`: `{open, serial}`, whether the plugin window shows.
+//! - `manager`: `{open, serial}`, whether the plugin window shows;
+//! - `panel:<app-id>:<topic>`: an app's live state for its mini-app panel,
+//!   `{state}` or `{error}`, followed only while a panel subscribes.
 //!
 //! Events: `message {text}` for the status line, `rerun {}` to search again.
 //!
@@ -19,7 +21,11 @@
 //! `Preview`, `Actions`, `ContextActions`,
 //! `History`, `CopyAnswer`, `Show {query?}`, `Hide`, `Toggle`, `OpenPlugins`,
 //! `ClosePlugins`, `PluginOp`, `PluginSettings`, `PluginConfigure`, `AddFolder`,
-//! `OpenSettings`.
+//! `OpenSettings`, and for panels `PanelRun {app, action, arguments, confirmed}` (only
+//! that app's actions; replies `{result}` or `{ask}`) and `PanelOpen {app, arguments}`.
+//!
+//! Only Glimpse's own programs connect: its Quickshell panel and `nyx-glimpse`
+//! (`NYX_GLIMPSE_ALLOW_ANY=1` lets a test copy take any same-user client).
 //!
 //! Search runs on one worker thread: `pw` and `cb` queries go to Nyx Passwords and Nyx
 //! Clipboard alone; others get the fast providers first (apps, file names, file contents
@@ -29,7 +35,7 @@
 
 use crate::{
     clipboard, clips,
-    commands::{self, Command as AppCommand, Commands},
+    commands::{self, Command as AppCommand, Commands, PanelOffer},
     config::{self, Paths},
     index, learning, passwords, plugins,
     preview::{self, Body, Flavor},
@@ -58,6 +64,8 @@ pub enum Item {
     Clipboard(clips::Cb),
     /// An app's action, with the arguments typed so far.
     Command(AppCommand),
+    /// An app's mini-app panel.
+    Panel(PanelOffer),
 }
 
 /// Files found only by meaning come last.
@@ -78,7 +86,7 @@ impl Row {
     /// The heading it's listed under, and that heading's place (the GTK panel's).
     fn category(&self) -> (u8, &'static str) {
         match &self.item {
-            Item::Provider(Target::App(_)) => (0, "Applications"),
+            Item::Provider(Target::App(_)) | Item::Panel(_) => (0, "Applications"),
             Item::File(_, hit) if hit["related"] == true => (RELATED, "Related"),
             Item::File(..) | Item::Provider(Target::File(_)) => (1, "Files"),
             Item::Copy(_) => (2, "Utilities"),
@@ -110,6 +118,7 @@ impl Row {
             Item::System(_) | Item::Provider(_) => vec![(enter, "Run")],
             Item::Password(p) => p.hints(),
             Item::Clipboard(c) => c.hints(),
+            Item::Panel(_) => vec![(enter, "Use"), (&["Ctrl", "Enter"][..], "Open in app")],
             Item::Command(c) => {
                 let run = if !c.missing.is_empty() && c.available {
                     "Continue"
@@ -147,6 +156,11 @@ impl Row {
             "fill": match &self.item {
                 Item::Command(c) => c.fill.as_str(),
                 _ => "",
+            },
+            "panel": match &self.item {
+                Item::Panel(o) => json!({"id": o.panel, "app": o.app_id, "name": o.app, "icon": o.icon, "query": o.query,
+                    "topics": o.topics, "size": o.size, "available": o.available, "reason": o.reason}),
+                _ => Value::Null,
             },
         })
     }
@@ -196,6 +210,19 @@ fn command_row(c: AppCommand) -> Row {
     }
 }
 
+fn panel_row(o: PanelOffer) -> Row {
+    let subtitle = o.reason.clone().unwrap_or_else(|| format!("{} at a glance", o.app));
+    Row { id: format!("panel:{}", o.app_id), title: o.app.clone(), subtitle, reason: String::new(), kind: "panel", icon: o.icon.clone(), item: Item::Panel(o) }
+}
+
+/// A query's command rows and, first, the app's panel.
+fn command_rows(commands: &Commands, fresh: bool, q: &str) -> Vec<Row> {
+    let catalog = commands.catalog(fresh);
+    let mut rows: Vec<Row> = commands.panel(&catalog, q).into_iter().map(panel_row).collect();
+    rows.extend(commands.rows(&catalog, q).into_iter().map(command_row));
+    rows
+}
+
 fn file_row(path: PathBuf, hit: &Value) -> Row {
     Row {
         id: format!("file:{}", path.display()),
@@ -233,7 +260,7 @@ fn merge(found: &mut Vec<Row>, more: Vec<Row>) {
     for mut row in more {
         match found.iter_mut().find(|r| r.id == row.id) {
             // Brought up to date (the app started, or stopped).
-            Some(existing) if matches!(row.item, Item::Command(_)) => *existing = row,
+            Some(existing) if matches!(row.item, Item::Command(_) | Item::Panel(_)) => *existing = row,
             Some(existing) => {
                 if let Item::File(_, hit) = &mut row.item
                     && !hit.is_null()
@@ -335,7 +362,7 @@ impl Engine {
         }
         let profile = learning::Profile::load(p, &c).unwrap_or_default();
         let ctx = SearchContext { paths: p, config: &c, query: q, cancelled };
-        let mut rows: Vec<Row> = self.commands.rows(&self.commands.catalog(false), q).into_iter().map(command_row).collect();
+        let mut rows = command_rows(&self.commands, false, q);
         let mut apps = 0;
         for (_, candidate) in self.fast.search(&ctx, &profile).0 {
             if matches!(candidate.target, Target::App(_)) {
@@ -376,7 +403,7 @@ impl Engine {
         }
         let profile = learning::Profile::load(p, &c).unwrap_or_default();
         let ctx = SearchContext { paths: p, config: &c, query: q, cancelled };
-        let mut rows: Vec<Row> = self.commands.rows(&self.commands.catalog(true), q).into_iter().map(command_row).collect();
+        let mut rows = command_rows(&self.commands, true, q);
         rows.extend(self.slow.search(&ctx, &profile).0.into_iter().take(30).map(|(_, c)| provider_row(c)));
         if let Ok(hits) = providers::Provider::discover(&mut self.extensions, &ctx) {
             rows.extend(hits.into_iter().map(provider_row));
@@ -476,6 +503,8 @@ pub enum Done {
     Fill(String),
     /// A command ran; its result is in its preview, this in the status line.
     Result(String),
+    /// The keyboard goes to the panel on show.
+    FocusPanel,
 }
 
 /// Run `row`'s action as plain Enter (`reveal`: Ctrl+Enter). `confirmed` is true for the
@@ -540,7 +569,8 @@ pub fn activate(p: &Paths, row: &Row, confirmed: bool, reveal: bool) -> Result<D
         Item::Provider(Target::System(_) | Target::File(_) | Target::Shared(_))
         | Item::Password(_)
         | Item::Clipboard(_)
-        | Item::Command(_) => {
+        | Item::Command(_)
+        | Item::Panel(_) => {
             bail!("Unsupported result")
         }
     }
@@ -754,6 +784,7 @@ fn preview_json(row: &Row, query: &str, images: &Path) -> Value {
             json!({"body": body_json(shown.body, row, images), "details": details(shown.details)})
         }
         Item::Command(c) => command_preview(c),
+        Item::Panel(o) => json!({"body": card(&o.icon, &o.app, o.reason.as_deref().unwrap_or("")), "details": []}),
         Item::Provider(_) => json!({"body": card(&row.icon, &row.title, &row.subtitle), "details": []}),
     }
 }
@@ -899,6 +930,54 @@ fn choose_folder(title: &str) -> Result<Option<PathBuf>> {
     .map_err(|e| anyhow!("{e}"))?
 }
 
+/// Glimpse's own programs: its Quickshell panel (in `qs`) and `nyx-glimpse`. Anything
+/// else of the same user could otherwise run commands as Glimpse.
+fn glimpse_peer(peer: &nyx_ui_link::Peer) -> bool {
+    peer.exe.as_deref().and_then(Path::file_name).is_some_and(|n| {
+        let n = n.to_string_lossy();
+        let n = n.strip_prefix('.').and_then(|n| n.strip_suffix("-wrapped")).unwrap_or(&n);
+        n == "qs" || n.starts_with("quickshell") || n == "nyx-glimpse"
+    })
+}
+
+/// A panel's topic gained its first viewer or lost its last: follow the app's state
+/// while someone looks (`panel:<app-id>:<topic>`), and stop after.
+fn panel_watch(shared: &Arc<Shared>, topic: &str, viewers: usize) {
+    let Some((app, name)) = topic.strip_prefix("panel:").and_then(|t| t.rsplit_once(':')) else { return };
+    let mut live = shared.live.lock().unwrap();
+    if viewers == 0 {
+        if let Some(task) = live.remove(topic) {
+            task.abort();
+        }
+        if let Some(link) = shared.link() {
+            link.publish(topic, Value::Null);
+        }
+        return;
+    }
+    if live.contains_key(topic) {
+        return;
+    }
+    let Some(link) = shared.link() else { return };
+    link.publish(topic, json!({"loading": true}));
+    let (commands, app, name, topic) = (shared.commands.clone(), app.to_string(), name.to_string(), topic.to_string());
+    let task = shared.commands.spawn({
+        let topic = topic.clone();
+        async move {
+            let mut follow = match commands.watch(&app, &name).await {
+                Ok(w) => w,
+                Err(e) => return link.publish(&topic, json!({"error": e.message})),
+            };
+            while let Some(next) = follow.next().await {
+                match next {
+                    Ok(state) => link.publish(&topic, json!({"state": state})),
+                    Err(e) => return link.publish(&topic, json!({"error": e.message})),
+                }
+            }
+        }
+    });
+    live.insert(topic, task);
+}
+
 /// Whether a Quickshell interface is connected to this backend.
 fn interface_connected(link: &nyx_ui_link::Link) -> bool {
     link.peers().iter().any(|peer| {
@@ -926,6 +1005,8 @@ struct Shared {
     commands: Arc<Commands>,
     /// Commands' results by row, shown in their preview until the next search.
     ran: Mutex<HashMap<String, Value>>,
+    /// Panels' live topics being followed, by link topic.
+    live: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 impl Shared {
@@ -1012,6 +1093,14 @@ fn run(shared: &Arc<Shared>, row: &Row, query: &str, how: &str, confirmed: bool)
     }
     match &row.item {
         Item::Command(c) if how == "enter" => run_command(shared, c, confirmed, &row.id),
+        Item::Panel(o) if how == "enter" => match &o.reason {
+            Some(reason) => bail!("{reason}"),
+            None => Ok(Done::FocusPanel),
+        },
+        Item::Panel(o) if how == "reveal" => {
+            shared.commands.open_app(&o.app_id, serde_json::Map::new())?;
+            Ok(Done::Closed)
+        }
         Item::Provider(Target::Shared(id)) if how == "enter" => {
             let c = shared.commands.plain(id).ok_or_else(|| anyhow!("That action isn't offered any more"))?;
             run_command(shared, &c, confirmed, &row.id)
@@ -1149,11 +1238,18 @@ pub fn serve(p: Paths) -> Result<()> {
         images,
         commands: Arc::new(Commands::default()),
         ran: Mutex::default(),
+        live: Mutex::default(),
     });
 
+    let mut options = nyx_ui_link::Options::new("nyx-glimpse");
+    if !std::env::var("NYX_GLIMPSE_ALLOW_ANY").is_ok_and(|v| v == "1") {
+        options.allow = Some(Arc::new(glimpse_peer));
+    }
+    let watching = shared.clone();
+    options.on_watch = Some(Arc::new(move |topic, viewers| panel_watch(&watching, topic, viewers)));
     let handler = shared.clone();
     let link = Arc::new(
-        nyx_ui_link::serve(nyx_ui_link::Options::new("nyx-glimpse"), move |req| {
+        nyx_ui_link::serve(options, move |req| {
             let shared = handler.clone();
             let Some(link) = shared.link() else {
                 return req.err("starting", "Glimpse is starting");
@@ -1206,6 +1302,7 @@ pub fn serve(p: Paths) -> Result<()> {
                         Ok(Done::Unlocked) => req.ok(json!({"rerun": true})),
                         Ok(Done::Fill(text)) => req.ok(json!({"fill": text})),
                         Ok(Done::Result(message)) => req.ok(json!({"message": message, "preview": true})),
+                        Ok(Done::FocusPanel) => req.ok(json!({"focus": true})),
                         Err(e) => req.err("failed", e.to_string()),
                     });
                 }
@@ -1399,6 +1496,28 @@ pub fn serve(p: Paths) -> Result<()> {
                         }
                     });
                 }
+                "PanelRun" => {
+                    let app = b["app"].as_str().unwrap_or("").to_string();
+                    let action = b["action"].as_str().unwrap_or("").to_string();
+                    let arguments = b["arguments"].as_object().cloned().unwrap_or_default();
+                    let confirmed = b["confirmed"].as_bool().unwrap_or(false);
+                    std::thread::spawn(move || match shared.commands.run_for_panel(&app, &action, arguments, confirmed) {
+                        Ok((_, value)) => req.ok(json!({"result": value})),
+                        Err(e) if e.kind == nyx_actions::ErrorKind::ConfirmationRequired => req.ok(json!({"ask": e.message})),
+                        Err(e) => req.err(e.kind.as_str(), e.message),
+                    });
+                }
+                "PanelOpen" => {
+                    let app = b["app"].as_str().unwrap_or("").to_string();
+                    let arguments = b["arguments"].as_object().cloned().unwrap_or_default();
+                    std::thread::spawn(move || match shared.commands.open_app(&app, arguments) {
+                        Ok(()) => {
+                            shared.publish_panel(false, false, None);
+                            req.ok(json!({}))
+                        }
+                        Err(e) => req.err("failed", format!("{e:#}")),
+                    });
+                }
                 other => req.err("unknown_op", format!("no operation {other}")),
             }
         })
@@ -1411,6 +1530,9 @@ pub fn serve(p: Paths) -> Result<()> {
     shared.publish_config();
     shared.publish_plugins();
     watch_settings(shared.clone());
+    // Which apps run, asked once now, so the first search already knows.
+    let warm = shared.commands.clone();
+    std::thread::spawn(move || drop(warm.catalog(true)));
 
     let mut engine = Engine::with_commands(p.clone(), applications(), shared.commands.clone());
     let publish = |g: u64, q: &str, found: &[Row], status: &str, complete: bool| {
@@ -1572,6 +1694,18 @@ mod tests {
         let create = named.iter().find(|r| r.kind == "command").unwrap();
         assert_eq!((create.reason.as_str(), create.json(&[])["fill"].as_str()), ("Needs TITLE", Some("notes create ")));
         assert!(engine.fast("pw notes", &|| false).unwrap().0.is_empty(), "pw stays the vault's alone");
+    }
+
+    #[test]
+    fn only_glimpse_s_own_programs_connect() {
+        let peer = |exe: Option<&str>| nyx_ui_link::Peer { id: 1, pid: 1, uid: 1000, exe: exe.map(PathBuf::from) };
+        for ok in ["/usr/bin/qs", "/usr/bin/quickshell", "/nix/store/x-quickshell/bin/.quickshell-wrapped", "/home/u/.local/bin/nyx-glimpse", "/nix/store/y/bin/.nyx-glimpse-wrapped"] {
+            assert!(glimpse_peer(&peer(Some(ok))), "{ok}");
+        }
+        for refused in ["/usr/bin/python3", "/usr/bin/socat", "/tmp/nyx-glimpse-evil"] {
+            assert!(!glimpse_peer(&peer(Some(refused))), "{refused}");
+        }
+        assert!(!glimpse_peer(&peer(None)));
     }
 
     #[test]

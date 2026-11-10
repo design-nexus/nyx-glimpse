@@ -21,6 +21,8 @@ const MAX_ROWS: usize = 8;
 pub struct Commands {
     runtime: tokio::runtime::Runtime,
     registry: Registry,
+    /// [`PANELS`], and the `example` panel for test copies (`GLIMPSE_TEST_PANELS=1`).
+    panels: Vec<String>,
 }
 
 /// An action with the arguments typed so far.
@@ -163,7 +165,17 @@ impl Commands {
             .enable_all()
             .build()
             .expect("a runtime for app actions");
-        Commands { runtime, registry: Registry::new(options) }
+        let mut panels: Vec<String> = PANELS.iter().map(|p| p.to_string()).collect();
+        if std::env::var("GLIMPSE_TEST_PANELS").is_ok_and(|v| v == "1") {
+            panels.push("example".into());
+        }
+        Commands { runtime, registry: Registry::new(options), panels }
+    }
+
+    /// Panels other than Glimpse's own list (tests).
+    pub fn with_panels(mut self, panels: &[&str]) -> Commands {
+        self.panels = panels.iter().map(|p| p.to_string()).collect();
+        self
     }
 
     /// What's on offer: as last seen (`fresh: false`, never waits), or brought up to date.
@@ -250,6 +262,87 @@ impl Commands {
     pub fn invoke(&self, c: &Command, confirmed: bool) -> Result<Value, nyx_actions::Error> {
         let options = InvokeOptions { confirmed, trusted: true, on_behalf_of: None, frontend: "glimpse".into() };
         self.runtime.block_on(self.registry.invoke(&c.action, Value::Object(c.arguments.clone()), &options))
+    }
+}
+
+/// The mini-app panels Glimpse ships (`quickshell/Glimpse/panels/<id>/Panel.qml`). An
+/// app's manifest can only pick one of these; nothing else runs in the shell.
+pub const PANELS: &[&str] = &[];
+
+/// An app's panel, offered for a query that starts with the app's name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelOffer {
+    pub app: String,
+    pub app_id: String,
+    pub icon: String,
+    pub panel: String,
+    /// The words after the app's name (`jazz` in `music jazz`), for the panel to use.
+    pub query: String,
+    pub topics: Vec<String>,
+    pub size: Value,
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+impl Commands {
+    /// The panel for `q` when its first word is exactly an app's name or alias and the
+    /// app has one of Glimpse's panels.
+    pub fn panel(&self, catalog: &Catalog, q: &str) -> Option<PanelOffer> {
+        let text = q.trim_start();
+        let first = resolve::split_words(text).into_iter().next()?;
+        let entry = catalog.app(&first)?;
+        let panel = entry.app.panel.as_ref().filter(|p| self.panels.contains(&p.id))?;
+        let rest = text[text.find(char::is_whitespace).unwrap_or(text.len())..].trim().to_string();
+        let available = entry.running.is_some() || entry.app.activation == nyx_actions::Activation::Dbus;
+        Some(PanelOffer {
+            app: entry.app.name.clone(),
+            app_id: entry.app.app.clone(),
+            icon: if entry.app.icon.is_empty() { "system-run-symbolic".into() } else { entry.app.icon.clone() },
+            panel: panel.id.clone(),
+            query: rest,
+            topics: panel.topics.clone(),
+            size: serde_json::to_value(&panel.size).unwrap_or(Value::Null),
+            available,
+            reason: (!available).then(|| format!("Open {} to use this", entry.app.name)),
+        })
+    }
+
+    /// Follow one of an app's topics for its panel (on the actions runtime, [`spawn`](Self::spawn)).
+    pub async fn watch(&self, app_id: &str, topic: &str) -> Result<nyx_actions::Watch, nyx_actions::Error> {
+        self.registry.watch(app_id, topic).await
+    }
+
+    /// Spawn `f` on the actions runtime (a panel's live state).
+    pub fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(&self, f: F) -> tokio::task::AbortHandle {
+        self.runtime.spawn(f).abort_handle()
+    }
+
+    /// An action a panel runs: only its own app's, checked as any other call.
+    pub fn run_for_panel(&self, app_id: &str, action: &str, arguments: Map<String, Value>, confirmed: bool) -> Result<(Command, Value), nyx_actions::Error> {
+        let catalog = self.catalog(false);
+        let (entry, listed) = catalog
+            .find(action)
+            .filter(|(e, _)| e.app.app == app_id)
+            .ok_or_else(|| nyx_actions::Error::new(nyx_actions::ErrorKind::PermissionDenied, format!("{action} isn't this panel's app's")))?;
+        let c = Command::new(entry, listed, arguments, String::new(), true);
+        let value = self.invoke(&c, confirmed)?;
+        Ok((c, value))
+    }
+
+    /// The app's own window, at `arguments` when it has an open action (`nyx.open`).
+    pub fn open_app(&self, app_id: &str, arguments: Map<String, Value>) -> anyhow::Result<()> {
+        let catalog = self.catalog(false);
+        let entry = catalog.apps.iter().find(|e| e.app.app == app_id).ok_or_else(|| anyhow::anyhow!("{app_id} isn't installed"))?;
+        if let Some(open) = &entry.app.open
+            && let Some((e, l)) = catalog.find(&open.action)
+        {
+            let c = Command::new(e, l, arguments, String::new(), true);
+            return self.invoke(&c, true).map(|_| ()).map_err(|e| anyhow::anyhow!(e.message));
+        }
+        use gtk::prelude::AppInfoExt;
+        let info = gio_unix::DesktopAppInfo::new(&format!("{app_id}.desktop")).ok_or_else(|| anyhow::anyhow!("{} has no desktop entry", entry.app.name))?;
+        info.launch(&[], None::<&gtk::gio::AppLaunchContext>)?;
+        Ok(())
     }
 }
 
@@ -411,6 +504,27 @@ mod tests {
         assert_eq!((words[0].action.as_str(), words[0].arguments["query"].as_str()), ("notes.search", Some("architecture")));
         assert!(rows("no").is_empty(), "two letters alone stay an ordinary search");
         assert!(rows("films play").is_empty());
+    }
+
+    #[test]
+    fn panels_are_offered_for_the_app_name_and_only_glimpse_s_own() {
+        let make = |panel: &str| {
+            let d = nyx_actions::Description::from_value(
+                &json!({"tools": [{"name": "music.status", "description": "Status.", "x-nyx": {"risk": "read_only"}}],
+                    "nyx": {"api": 2, "app": "io.github.design_nexus.nyx.Music", "name": "Music", "namespaces": ["music"], "bus_name": "io.github.design_nexus.nyx.Music",
+                        "activation": "dbus", "topics": [{"name": "playback"}], "panel": {"id": panel, "topics": ["playback"], "size": {"preferred": [520, 380]}}}}),
+                None,
+            )
+            .unwrap();
+            Catalog::merge(vec![d], vec![], &|_| None).0
+        };
+        let commands = Commands::new(Options { dirs: vec![], bus_address: None, live: false }).with_panels(&["music"]);
+        let offer = commands.panel(&make("music"), "music  jazz piano").unwrap();
+        assert_eq!((offer.panel.as_str(), offer.query.as_str(), offer.topics.clone()), ("music", "jazz piano", vec!["playback".to_string()]));
+        assert_eq!(offer.size["preferred"], json!([520, 380]));
+        assert!(offer.available);
+        assert!(commands.panel(&make("music"), "mus").is_none(), "only the app's whole name");
+        assert!(commands.panel(&make("evil"), "music").is_none(), "only Glimpse's panels");
     }
 
     #[test]
