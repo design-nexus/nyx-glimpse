@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 #[allow(dead_code)]
-#[path = "../../settings/src/ext/protocol.rs"]
+#[path = "support/settings_protocol.rs"]
 mod current_host;
 fn fixture() -> (tempfile::TempDir, Paths, Config) {
     let temp = tempfile::Builder::new().prefix("glimpse-test-").tempdir().unwrap();
