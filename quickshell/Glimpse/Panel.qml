@@ -42,6 +42,9 @@ Item {
     function openHistory() {
         actions.openHistory();
     }
+    function miniApp(fn) {
+        preview.panelCall(fn);
+    }
     function focusMiniApp() {
         preview.focusPanel();
     }

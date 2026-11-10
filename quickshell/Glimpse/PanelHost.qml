@@ -26,9 +26,13 @@ FocusScope {
     property var pending: null
 
     signal back
+    // The panel itself, for tests (GLIMPSE_TEST_IPC).
+    readonly property var body: panelLoader.item
 
+    // From the offer itself: on a switch to another app's panel, onOfferChanged can run
+    // before appId follows.
     function topicName(name) {
-        return "panel:" + appId + ":" + name;
+        return "panel:" + (offer ? offer.app : "") + ":" + name;
     }
     function topic(name) {
         return backend.state[topicName(name)] || { loading: true };
@@ -67,7 +71,7 @@ FocusScope {
     // Each new search sends the offer again; the same topics stay watched.
     function watchAll() {
         const want = (offer && offer.topics ? offer.topics : []).map(t => topicName(t));
-        if (want.join("\n") === watched.join("\n"))
+                if (want.join("\n") === watched.join("\n"))
             return;
         unwatchAll();
         watched = want;
@@ -110,12 +114,12 @@ FocusScope {
     onPanelIdChanged: loadPanel()
     function loadPanel() {
         if (panelId === "")
-            body.source = "";
+            panelLoader.source = "";
         else
-            body.setSource(Qt.resolvedUrl("panels/" + panelId + "/Panel.qml"), { host: host });
+            panelLoader.setSource(Qt.resolvedUrl("panels/" + panelId + "/Panel.qml"), { host: host });
     }
     Loader {
-        id: body
+        id: panelLoader
         anchors.fill: parent
         focus: true
         asynchronous: true
@@ -125,9 +129,9 @@ FocusScope {
     StateView {
         anchors.centerIn: parent
         width: parent.width
-        visible: host.failed !== null || body.status !== Loader.Ready || (host.loading && host.states.length > 0 && !host.states.some(s => s.state !== undefined))
-        kind: host.failed || body.status === Loader.Error ? "error" : "loading"
-        text: host.failed ? host.failed.error : body.status === Loader.Error ? "This panel couldn't load" : ""
+        visible: host.failed !== null || panelLoader.status !== Loader.Ready || (host.loading && host.states.length > 0 && !host.states.some(s => s.state !== undefined))
+        kind: host.failed || panelLoader.status === Loader.Error ? "error" : "loading"
+        text: host.failed ? host.failed.error : panelLoader.status === Loader.Error ? "This panel couldn't load" : ""
     }
 
     // What a call that asks first will do, over the panel.

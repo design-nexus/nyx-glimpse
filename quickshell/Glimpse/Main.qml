@@ -240,5 +240,9 @@ Scope {
         function enter(how: string): void {
             root.activate(root.selected, how || "enter");
         }
+        // One of the shown mini-app panel's own functions, as its key would (`add`).
+        function mini(fn: string): void {
+            panel.miniApp(fn);
+        }
     }
 }

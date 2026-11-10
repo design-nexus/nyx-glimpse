@@ -29,6 +29,11 @@ Item {
     readonly property var panelOffer: glimpse.current ? shownOffer : heldOffer
     onShownOfferChanged: if (glimpse.current)
         heldOffer = shownOffer
+    function panelCall(fn) {
+        const p = miniApp.item ? miniApp.item.body : null;
+        if (p && typeof p[fn] === "function")
+            p[fn]();
+    }
     function focusPanel() {
         if (miniApp.item)
             miniApp.item.forceActiveFocus();
