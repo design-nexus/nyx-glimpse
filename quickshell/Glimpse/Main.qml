@@ -180,6 +180,9 @@ Scope {
         fullscreenRule: "show"
         placement: "active"
         restoreFocus: true
+        // A runtime that started while the backend had it open shows it once registered.
+        onRegistered: if (root.asked)
+            ShellCore.showOverlay("glimpse")
         anchors.top: true
         anchors.bottom: true
         anchors.left: true
