@@ -22,6 +22,24 @@ FocusScope {
     // Marked with Ctrl+C or Ctrl+X: {move, paths}.
     property var marked: null
     readonly property var pickedItem: items[picked] || null
+    // Files says when a folder it listed changed; the one shown lists again.
+    readonly property var changes: (host && host.topic("changes").state && host.topic("changes").state.changed) || ({})
+    property int seen: 0
+    onChangesChanged: {
+        const n = changes[path];
+        if (path && !searching && n !== undefined && n > seen) {
+            seen = n;
+            reload();
+        }
+    }
+    function reload() {
+        host.run("files.list", { path: path }, (result, err) => {
+            if (!result || result.path !== panel.path)
+                return;
+            items = result.items || [];
+            picked = Math.min(picked, Math.max(0, items.length - 1));
+        });
+    }
 
     function go(target) {
         loading = true;
@@ -37,6 +55,7 @@ FocusScope {
             }
             failure = "";
             searching = false;
+            seen = panel.changes[result.path] || 0;
             path = result.path;
             shown = result.shown;
             parentPath = result.parent || "";

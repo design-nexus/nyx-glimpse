@@ -222,12 +222,64 @@ FocusScope {
         }
     }
 
-    Row {
+    // The audio outputs, listed while choosing one.
+    property var outputs: []
+    property bool choosing: false
+    function chooseOutput() {
+        choosing = !choosing;
+        if (choosing)
+            host.run("music.outputs", {}, (result, err) => panel.outputs = result ? result.items : []);
+    }
+    function useOutput(o) {
+        choosing = false;
+        host.run("music.output", { output: o.id }, (result, err) => {
+            if (result)
+                host.say(result.message);
+        });
+    }
+
+    Rectangle {
+        visible: panel.choosing
+        anchors.bottom: footer.top
+        anchors.bottomMargin: 6
+        width: Math.min(parent.width, 320)
+        height: Math.min(outputList.contentHeight + 12, 200)
+        radius: Style.radiusCard
+        color: Style.card
+        Accessible.role: Accessible.List
+        Accessible.name: "Audio outputs"
+        ListView {
+            id: outputList
+            anchors.fill: parent
+            anchors.margins: 6
+            clip: true
+            model: panel.outputs
+            delegate: ListRow {
+                required property var modelData
+                width: outputList.width
+                icon: "audio-speakers-symbolic"
+                title: modelData.title
+                subtitle: modelData.subtitle || ""
+                selected: modelData.current === true
+                onClicked: panel.useOutput(modelData)
+            }
+        }
+    }
+
+    Item {
         id: footer
         anchors.bottom: parent.bottom
-        anchors.right: parent.right
-        spacing: 6
+        width: parent.width
+        height: openMusic.height
         Button {
+            icon: "audio-speakers-symbolic"
+            text: panel.now.output || "Output"
+            flat: true
+            onClicked: panel.chooseOutput()
+        }
+        Button {
+            id: openMusic
+            anchors.right: parent.right
             text: "Open Music"
             onClicked: panel.host.open({ section: "now-playing" })
         }
