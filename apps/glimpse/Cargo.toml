@@ -13,7 +13,7 @@ nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4378e2
 nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "40db521bab468d54f18f65c6aabd7fc8533d6a4d" }
 nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "40db521bab468d54f18f65c6aabd7fc8533d6a4d" }
 nyx-ui-link = { git = "https://github.com/design-nexus/nyx-core.git", rev = "546ed1e3b8f53061e64565ec675ee73429ad9d50" }
-nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "69277d85496e6d85e0be948f88831a7611b83f3b" }
+nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "b2b7509c96c0220b1d799c420172f28b34655664" }
 nyx-ai-client = { git = "https://github.com/design-nexus/nyx-ai.git", rev = "9633690eee06724145be430db439244ba131825f" }
 nyx-passwords-proto = { git = "https://github.com/design-nexus/nyx-passwords.git", rev = "271eac96e166f1adceecc3e3c6c0dfde027ca522", features = ["client"] }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }

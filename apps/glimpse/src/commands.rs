@@ -184,7 +184,8 @@ impl Commands {
     }
 
     /// The command rows for `q`, when its first word names an app.
-    pub fn rows(&self, catalog: &Catalog, q: &str) -> Vec<Command> {
+    /// `suggest`: also ask running apps' `x-nyx.suggest` actions (the slower pass).
+    pub fn rows(&self, catalog: &Catalog, q: &str, suggest: bool) -> Vec<Command> {
         let text = q.trim_start();
         let words = resolve::split_words(text);
         let Some(first) = words.first() else { return Vec::new() };
@@ -222,7 +223,11 @@ impl Commands {
         }
         // A namespace alone lists verbs; an action's other words come once one is typed.
         let verbs: Vec<String> = entry.actions.iter().map(|l| l.action.verb().split('.').next().unwrap_or_default().to_string()).collect();
-        for candidate in resolve::complete(catalog, &done, &partial) {
+        let mut candidates = resolve::complete(catalog, &done, &partial);
+        if suggest && done.len() > 1 {
+            candidates.extend(self.runtime.block_on(self.registry.suggest(catalog, &done, &partial)));
+        }
+        for candidate in candidates {
             if candidate.eq_ignore_ascii_case(&partial) && !partial.is_empty() {
                 continue;
             }
@@ -489,7 +494,7 @@ mod tests {
     }
 
     fn rows(q: &str) -> Vec<Command> {
-        Commands::new(Options { dirs: vec![], bus_address: None, live: false }).rows(&catalog(), q)
+        Commands::new(Options { dirs: vec![], bus_address: None, live: false }).rows(&catalog(), q, false)
     }
 
     #[test]

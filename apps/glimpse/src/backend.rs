@@ -70,6 +70,9 @@ pub enum Item {
     Command(AppCommand),
     /// An app's mini-app panel.
     Panel(PanelOffer),
+    /// Words that start with an app's name but match none of its commands, offered to
+    /// Nyx Assistant only if picked.
+    Ask(String),
 }
 
 /// Files found only by meaning come last.
@@ -97,6 +100,7 @@ impl Row {
             Item::Provider(Target::Plugin(..)) => (4, "Plugins"),
             // Typed as a command, it comes first; matched by the app's name or a word, after files.
             Item::Command(c) if c.explicit => (0, "Commands"),
+            Item::Ask(_) => (0, "Commands"),
             Item::Command(_) | Item::Provider(Target::Shared(_)) => (3, "Commands"),
             Item::System(_) | Item::Provider(_) => (3, "System"),
             Item::Password(_) => (0, "Passwords"),
@@ -123,6 +127,7 @@ impl Row {
             Item::Password(p) => p.hints(),
             Item::Clipboard(c) => c.hints(),
             Item::Panel(_) => vec![(enter, "Use"), (&["Ctrl", "Enter"][..], "Open in app"), (&["Ctrl", "P"][..], "Pin")],
+            Item::Ask(_) => vec![(enter, "Ask")],
             Item::Command(c) => {
                 let run = if !c.missing.is_empty() && c.available {
                     "Continue"
@@ -218,12 +223,31 @@ fn panel_row(o: PanelOffer) -> Row {
     Row { id: format!("panel:{}", o.app_id), title: o.app.clone(), subtitle, reason: String::new(), kind: "panel", icon: o.icon.clone(), item: Item::Panel(o) }
 }
 
-/// A query's command rows and, first, the app's panel.
+/// A query's command rows and, first, the app's panel; when the words start with an
+/// app's name and match none of its commands, "Ask Nyx Assistant" (where it's installed).
 fn command_rows(commands: &Commands, fresh: bool, q: &str) -> Vec<Row> {
     let catalog = commands.catalog(fresh);
     let mut rows: Vec<Row> = commands.panel(&catalog, q).into_iter().map(panel_row).collect();
-    rows.extend(commands.rows(&catalog, q).into_iter().map(command_row));
+    let found: Vec<Row> = commands.rows(&catalog, q, fresh).into_iter().map(command_row).collect();
+    let words = nyx_actions::resolve::split_words(q);
+    if found.is_empty() && words.len() > 1 && catalog.app(&words[0]).is_some() && on_path("nyx-assistant") {
+        let text = q.trim().to_string();
+        rows.push(Row {
+            id: format!("ask:{text}"),
+            title: "Ask Nyx Assistant".into(),
+            subtitle: format!("“{text}”: no {} command matches", words[0]),
+            reason: String::new(),
+            kind: "command",
+            icon: "io.github.design_nexus.nyx.Assistant".into(),
+            item: Item::Ask(text),
+        });
+    }
+    rows.extend(found);
     rows
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
 }
 
 fn file_row(path: PathBuf, hit: &Value) -> Row {
@@ -573,7 +597,8 @@ pub fn activate(p: &Paths, row: &Row, confirmed: bool, reveal: bool) -> Result<D
         | Item::Password(_)
         | Item::Clipboard(_)
         | Item::Command(_)
-        | Item::Panel(_) => {
+        | Item::Panel(_)
+        | Item::Ask(_) => {
             bail!("Unsupported result")
         }
     }
@@ -788,6 +813,7 @@ fn preview_json(row: &Row, query: &str, images: &Path) -> Value {
         }
         Item::Command(c) => command_preview(c),
         Item::Panel(o) => json!({"body": card(&o.icon, &o.app, o.reason.as_deref().unwrap_or("")), "details": []}),
+        Item::Ask(text) => json!({"body": card(&row.icon, "Ask Nyx Assistant", &format!("Enter sends “{text}” to Nyx Assistant. Glimpse's commands work without it.")), "details": []}),
         Item::Provider(_) => json!({"body": card(&row.icon, &row.title, &row.subtitle), "details": []}),
     }
 }
@@ -1139,6 +1165,15 @@ fn run(shared: &Arc<Shared>, row: &Row, query: &str, how: &str, confirmed: bool)
     }
     match &row.item {
         Item::Command(c) if how == "enter" => run_command(shared, c, confirmed, &row.id),
+        Item::Ask(text) if how == "enter" => {
+            std::process::Command::new("nyx-assistant")
+                .args(["say", text])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+            Ok(Done::Closed)
+        }
         Item::Panel(o) if how == "enter" => match &o.reason {
             Some(reason) => bail!("{reason}"),
             None => Ok(Done::FocusPanel),
