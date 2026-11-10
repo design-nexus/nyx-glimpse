@@ -22,6 +22,9 @@ Scope {
         id: backend
         app: "nyx-glimpse"
         topics: ["panel", "results", "config", "plugins", "manager"]
+        // A backend that started again knows no search: the one on show is sent again.
+        onReconnected: if (panel.text.trim() !== "")
+            root.search(panel.text)
         onEvent: (name, body) => {
             if (name === "message")
                 root.say(body.text || "");

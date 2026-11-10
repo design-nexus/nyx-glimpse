@@ -220,8 +220,13 @@ impl Commands {
             }
             texts.push((typed, true));
         }
+        // A namespace alone lists verbs; an action's other words come once one is typed.
+        let verbs: Vec<String> = entry.actions.iter().map(|l| l.action.verb().split('.').next().unwrap_or_default().to_string()).collect();
         for candidate in resolve::complete(catalog, &done, &partial) {
             if candidate.eq_ignore_ascii_case(&partial) && !partial.is_empty() {
+                continue;
+            }
+            if done.len() == 1 && partial.is_empty() && !verbs.contains(&candidate) {
                 continue;
             }
             let mut filled = done.clone();
@@ -267,7 +272,7 @@ impl Commands {
 
 /// The mini-app panels Glimpse ships (`quickshell/Glimpse/panels/<id>/Panel.qml`). An
 /// app's manifest can only pick one of these; nothing else runs in the shell.
-pub const PANELS: &[&str] = &[];
+pub const PANELS: &[&str] = &["music"];
 
 /// An app's panel, offered for a query that starts with the app's name.
 #[derive(Clone, Debug, PartialEq)]
