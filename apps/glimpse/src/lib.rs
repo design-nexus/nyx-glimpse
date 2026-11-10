@@ -1,16 +1,19 @@
 pub mod cli;
 pub mod clipboard;
+pub mod clips;
 pub mod config;
 pub mod index;
 pub mod integration;
 pub mod passwords;
 pub mod pim;
 pub mod plugins;
+pub mod preview;
 pub mod process;
 pub mod sdk;
 pub mod semantic;
 pub mod settings;
 pub mod utility;
+pub mod vault;
 
 pub mod query;
 
