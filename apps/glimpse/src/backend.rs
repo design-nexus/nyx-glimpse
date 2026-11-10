@@ -1644,27 +1644,41 @@ pub fn serve(p: Paths) -> Result<()> {
     std::thread::spawn(move || drop(warm.catalog(true)));
 
     let mut engine = Engine::with_commands(p.clone(), applications(), shared.commands.clone());
-    let publish = |g: u64, q: &str, found: &[Row], status: &str, complete: bool| {
-        if shared.generation.load(Ordering::SeqCst) != g {
-            return;
-        }
-        let c = p.load().unwrap_or_default();
-        let mut sorted = found.to_vec();
-        sorted.sort_by_key(|r| r.category().0);
-        let rows: Vec<Value> = sorted.iter().map(|r| r.json(&c.favorites)).collect();
-        *shared.rows.lock().unwrap() = (g, q.to_string(), sorted.into_iter().map(|r| (r.id.clone(), r)).collect());
-        link.publish(
-            "results",
-            json!({"generation": g, "query": q, "rows": rows, "status": status, "complete": complete, "calc": calc_display(q, &c)}),
-        );
-    };
-    loop {
-        let (mut g, mut q) = match job_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(job) => job,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                engine.idle();
-                continue;
+    // The slower providers (meaning search through AI Core, plugins, Omarchy, services)
+    // run on a thread of their own, as in the GTK panel: a search waiting for AI Core to
+    // load its model never holds up the next key's results.
+    let (slow_jobs, slow_rx) = mpsc::channel::<(u64, String, Vec<Row>, String)>();
+    {
+        let (shared, link, p) = (shared.clone(), link.clone(), p.clone());
+        std::thread::spawn(move || {
+            let mut engine = Engine::with_commands(p.clone(), vec![], shared.commands.clone());
+            loop {
+                let (mut g, mut q, mut found, mut status) = match slow_rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(job) => job,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        engine.idle();
+                        continue;
+                    }
+                    Err(_) => return,
+                };
+                // Typing goes on: only the search still in the field is worth this.
+                std::thread::sleep(Duration::from_millis(150));
+                while let Ok(next) = slow_rx.try_recv() {
+                    (g, q, found, status) = next;
+                }
+                let cancelled = || shared.generation.load(Ordering::SeqCst) != g;
+                if cancelled() {
+                    continue;
+                }
+                let (more, slow_status) = engine.slow(&q, &cancelled).unwrap_or_else(|e| (vec![], e.to_string()));
+                merge(&mut found, more);
+                publish_results(&shared, &link, &p, g, &q, &found, if slow_status.is_empty() { &status } else { &slow_status }, true);
             }
+        });
+    }
+    loop {
+        let (mut g, mut q) = match job_rx.recv() {
+            Ok(job) => job,
             Err(_) => return Ok(()),
         };
         std::thread::sleep(Duration::from_millis(10));
@@ -1676,22 +1690,34 @@ pub fn serve(p: Paths) -> Result<()> {
             continue;
         }
         if let Some((rows, status)) = vault_rows(q.trim()) {
-            publish(g, &q, &rows, &status, true);
+            publish_results(&shared, &link, &p, g, &q, &rows, &status, true);
             continue;
         }
         if utility::currency_query(q.trim()).is_some() {
-            publish(g, &q, &[], "Getting daily currency rates…", false);
+            publish_results(&shared, &link, &p, g, &q, &[], "Getting daily currency rates…", false);
         }
-        let (mut found, status) = engine.fast(&q, &cancelled).unwrap_or_else(|e| (vec![], e.to_string()));
-        publish(g, &q, &found, &status, false);
-        std::thread::sleep(Duration::from_millis(150));
-        if cancelled() {
-            continue;
-        }
-        let (more, slow_status) = engine.slow(&q, &cancelled).unwrap_or_else(|e| (vec![], e.to_string()));
-        merge(&mut found, more);
-        publish(g, &q, &found, if slow_status.is_empty() { &status } else { &slow_status }, true);
+        let (found, status) = engine.fast(&q, &cancelled).unwrap_or_else(|e| (vec![], e.to_string()));
+        publish_results(&shared, &link, &p, g, &q, &found, &status, false);
+        let _ = slow_jobs.send((g, q, found, status));
     }
+}
+
+/// Sends the rows for generation `g`, sorted into their categories, unless a newer search
+/// has started since.
+#[allow(clippy::too_many_arguments)]
+fn publish_results(shared: &Shared, link: &nyx_ui_link::Link, p: &Paths, g: u64, q: &str, found: &[Row], status: &str, complete: bool) {
+    if shared.generation.load(Ordering::SeqCst) != g {
+        return;
+    }
+    let c = p.load().unwrap_or_default();
+    let mut sorted = found.to_vec();
+    sorted.sort_by_key(|r| r.category().0);
+    let rows: Vec<Value> = sorted.iter().map(|r| r.json(&c.favorites)).collect();
+    *shared.rows.lock().unwrap() = (g, q.to_string(), sorted.into_iter().map(|r| (r.id.clone(), r)).collect());
+    link.publish(
+        "results",
+        json!({"generation": g, "query": q, "rows": rows, "status": status, "complete": complete, "calc": calc_display(q, &c)}),
+    );
 }
 
 /// Settings, plugins and the catalog changing: the config and plugin topics are sent
