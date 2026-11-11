@@ -103,6 +103,12 @@ pub fn apply(paths: &Paths, shortcuts: Option<bool>) -> Result<()> {
     if !file.exists() && shortcuts.is_none() && !paths.state.join("hypr-block.lua").exists() {
         return Ok(());
     }
+    // A hyprland.lua another tool manages (Home Manager's link on NyxOS, which binds
+    // Glimpse itself) isn't edited: writing it replaced the link with a copy, and the
+    // block's Omarchy Lua (`o.rebind`) doesn't load there.
+    if file.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        return Ok(());
+    }
     apply_at(paths, &file, shortcuts, true)
 }
 /// Where distributions install user units; one there takes the place of the unit

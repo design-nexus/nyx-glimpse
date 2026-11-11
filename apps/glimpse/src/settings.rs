@@ -70,7 +70,10 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
     if crate::ai_setup::failed(p) {
         ai.push(button("ai-retry", "Setup could not finish", "Retry", ""));
     }
-    let follow = matches!(suite.mode, nyx_theme::ThemeMode::Omarchy);
+    // Following Omarchy's theme is a choice only where Omarchy's theme exists (not on
+    // NyxOS, where it would leave every Nyx app on the fallback theme).
+    let omarchy = nyx_theme::omarchy_available();
+    let follow = omarchy && matches!(suite.mode, nyx_theme::ThemeMode::Omarchy);
     let mut groups = vec![
         group(
             "General",
@@ -94,18 +97,21 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
                 entry("action_key", "Contextual actions", &c.action_key, "<Control>k"),
                 entry("favorite_key", "Toggle favorite", &c.favorite_key, "<Control><Shift>f"),
                 json!({"kind":"entry","key":"search_key","title":"Search shortcut","value":c.search_key,"placeholder":"SUPER + SPACE","disabled":!shortcuts_enabled(p),"refresh":true}),
-                json!({"kind":"entry","key":"menu_key","title":"Omarchy menu shortcut","value":c.menu_key,"placeholder":"CTRL + SPACE","disabled":!shortcuts_enabled(p),"refresh":true}),
-            ],
+            ]
+            .into_iter()
+            .chain(omarchy.then(|| json!({"kind":"entry","key":"menu_key","title":"Omarchy menu shortcut","value":c.menu_key,"placeholder":"CTRL + SPACE","disabled":!shortcuts_enabled(p),"refresh":true})))
+            .collect(),
         ),
         group("Sources", sources),
         group("Local AI", ai),
         group("Plugins", vec![button("plugins", "Manage plugins", "Open", "")]),
         group(
             "Appearance",
-            vec![
-                switch("follow_omarchy", "Follow Omarchy", follow),
-                json!({"kind":"choice","key":"theme","title":"Theme","value":suite.theme,"options":theme_options,"disabled":follow,"refresh":true}),
-            ],
+            omarchy
+                .then(|| switch("follow_omarchy", "Follow Omarchy", follow))
+                .into_iter()
+                .chain([json!({"kind":"choice","key":"theme","title":"Theme","value":suite.theme,"options":theme_options,"disabled":follow,"refresh":true})])
+                .collect(),
         ),
     ];
     for g in &mut groups {
