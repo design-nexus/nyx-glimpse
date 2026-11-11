@@ -355,6 +355,21 @@ pub fn applications() -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// Set when an app is installed, changed or removed, until the list is read again.
+fn watch_applications() -> Arc<AtomicBool> {
+    let changed = Arc::new(AtomicBool::new(false));
+    let flag = changed.clone();
+    std::thread::spawn(move || {
+        let ctx = glib::MainContext::new();
+        let _ = ctx.with_thread_default(|| {
+            let monitor = gio::AppInfoMonitor::get();
+            monitor.connect_changed(move |_| flag.store(true, Ordering::SeqCst));
+            glib::MainLoop::new(Some(&ctx), false).run();
+        });
+    });
+    changed
+}
+
 pub struct Engine {
     paths: Paths,
     fast: providers::Registry,
@@ -372,15 +387,13 @@ impl Engine {
     }
 
     pub fn with_commands(paths: Paths, apps: Vec<(String, String, String)>, commands: Arc<Commands>) -> Engine {
-        let mut fast = providers::Registry::default();
-        let _ = fast.register(providers::Applications(apps));
         let mut slow = providers::Registry::default();
         let _ = slow.register(crate::omarchy::Omarchy::default());
         let _ = slow.register(providers::DesktopServices);
         let _ = slow.register(commands::Fuzzy(commands.clone()));
         Engine {
             paths,
-            fast,
+            fast: fast_registry(apps),
             slow,
             files: providers::Files::default(),
             extensions: providers::Extensions,
@@ -503,6 +516,16 @@ impl Engine {
             s.release_idle();
         }
     }
+
+    pub fn set_applications(&mut self, apps: Vec<(String, String, String)>) {
+        self.fast = fast_registry(apps);
+    }
+}
+
+fn fast_registry(apps: Vec<(String, String, String)>) -> providers::Registry {
+    let mut fast = providers::Registry::default();
+    let _ = fast.register(providers::Applications(apps));
+    fast
 }
 
 /// `pw …` and `cb …`: for Nyx Passwords and Nyx Clipboard only.
@@ -1685,6 +1708,7 @@ pub fn serve(p: Paths) -> Result<()> {
     let warm = shared.commands.clone();
     std::thread::spawn(move || drop(warm.catalog(true)));
 
+    let apps_changed = watch_applications();
     let mut engine = Engine::with_commands(p.clone(), applications(), shared.commands.clone());
     // The slower providers (meaning search through AI Core, plugins, Omarchy, services)
     // run on a thread of their own, as in the GTK panel: a search waiting for AI Core to
@@ -1730,6 +1754,9 @@ pub fn serve(p: Paths) -> Result<()> {
         let cancelled = || shared.generation.load(Ordering::SeqCst) != g;
         if cancelled() {
             continue;
+        }
+        if apps_changed.swap(false, Ordering::SeqCst) {
+            engine.set_applications(applications());
         }
         if let Some((rows, status)) = vault_rows(q.trim()) {
             publish_results(&shared, &link, &p, g, &q, &rows, &status, true);
