@@ -87,6 +87,8 @@ pub struct Row {
     pub reason: String,
     pub kind: &'static str,
     pub icon: String,
+    /// An app's panel, carried by the app's own row (one row per app).
+    pub panel: Option<PanelOffer>,
     pub item: Item,
 }
 
@@ -120,7 +122,10 @@ impl Row {
                 }
                 list
             }
-            Item::Provider(Target::App(_)) => vec![(enter, "Launch")],
+            Item::Provider(Target::App(_)) => match &self.panel {
+                Some(o) if o.reason.is_none() => vec![(enter, "Open"), (&["Tab"][..], "Use the panel"), (&["Ctrl", "P"][..], "Pin")],
+                _ => vec![(enter, "Open")],
+            },
             Item::Copy(_) => vec![(enter, "Copy")],
             Item::System("lock") => vec![(enter, "Lock")],
             Item::Provider(Target::Plugin(..)) => vec![(enter, "Open")],
@@ -169,7 +174,7 @@ impl Row {
             },
             "panel": match &self.item {
                 Item::Panel(o) => offer_json(o),
-                _ => Value::Null,
+                _ => self.panel.as_ref().map(offer_json).unwrap_or(Value::Null),
             },
         })
     }
@@ -204,7 +209,7 @@ fn provider_row(c: providers::Candidate) -> Row {
         Target::File(path) => Item::File(path, Value::Null),
         target => Item::Provider(target),
     };
-    Row { id: c.id, title: c.title, subtitle: c.subtitle, reason: String::new(), kind, icon, item }
+    Row { id: c.id, title: c.title, subtitle: c.subtitle, reason: String::new(), kind, icon, panel: None, item }
 }
 
 fn command_row(c: AppCommand) -> Row {
@@ -215,13 +220,40 @@ fn command_row(c: AppCommand) -> Row {
         reason: c.badge(),
         kind: "command",
         icon: c.icon.clone(),
+        panel: None,
         item: Item::Command(c),
     }
 }
 
 fn panel_row(o: PanelOffer) -> Row {
     let subtitle = o.reason.clone().unwrap_or_else(|| format!("{} at a glance", o.app));
-    Row { id: format!("panel:{}", o.app_id), title: o.app.clone(), subtitle, reason: String::new(), kind: "panel", icon: o.icon.clone(), item: Item::Panel(o) }
+    Row { id: format!("panel:{}", o.app_id), title: o.app.clone(), subtitle, reason: String::new(), kind: "panel", icon: o.icon.clone(), panel: None, item: Item::Panel(o) }
+}
+
+/// An app's panel goes on the app's own row, which takes the panel's place (first); a
+/// panel whose app isn't listed (Devices is Settings') keeps a row of its own.
+fn fold_panels(rows: &mut Vec<Row>) {
+    let mut i = 0;
+    while i < rows.len() {
+        let Item::Panel(o) = &rows[i].item else {
+            i += 1;
+            continue;
+        };
+        let app = rows.iter().position(|r| matches!(&r.item, Item::Provider(Target::App(id)) if id.strip_suffix(".desktop").unwrap_or(id) == o.app_id));
+        let Some(at) = app else {
+            i += 1;
+            continue;
+        };
+        let offer = o.clone();
+        let mut row = rows.remove(at);
+        if let Some(reason) = &offer.reason {
+            row.subtitle = reason.clone();
+        }
+        row.panel = Some(offer);
+        let i_now = if at < i { i - 1 } else { i };
+        rows[i_now] = row;
+        i = i_now + 1;
+    }
 }
 
 /// A query's command rows and, first, the app's panel; when the words start with an
@@ -240,6 +272,7 @@ fn command_rows(commands: &Commands, fresh: bool, q: &str) -> Vec<Row> {
             reason: String::new(),
             kind: "command",
             icon: "io.github.design_nexus.nyx.Assistant".into(),
+            panel: None,
             item: Item::Ask(text),
         });
     }
@@ -259,6 +292,7 @@ fn file_row(path: PathBuf, hit: &Value) -> Row {
         reason: preview::match_reason(hit),
         kind: "file",
         icon: file_icon(&path),
+        panel: None,
         item: Item::File(path, hit.clone()),
     }
 }
@@ -277,6 +311,7 @@ fn system_row(name: &str, cmd: &'static str) -> Row {
         reason: String::new(),
         kind: "system",
         icon: icon.into(),
+        panel: None,
         item: Item::System(cmd),
     }
 }
@@ -380,6 +415,7 @@ impl Engine {
                             reason: String::new(),
                             kind: "answer",
                             icon: "accessories-calculator-symbolic".into(),
+                            panel: None,
                             item: Item::Copy(a.copy),
                         })
                         .collect(),
@@ -493,6 +529,7 @@ fn vault_rows(q: &str) -> Option<(Vec<Row>, String)> {
                 reason: String::new(),
                 kind: "password",
                 icon: pw.icon().into(),
+                panel: None,
                 item: Item::Password(pw),
             })
             .collect();
@@ -509,6 +546,7 @@ fn vault_rows(q: &str) -> Option<(Vec<Row>, String)> {
             reason: String::new(),
             kind: "clipboard",
             icon: cb.icon().into(),
+            panel: None,
             item: Item::Clipboard(cb),
         })
         .collect();
@@ -717,6 +755,9 @@ fn panel_actions(p: &Paths, row: &Row) -> Vec<(String, String)> {
     let mut items = vec![("Open".to_string(), "open".to_string())];
     match &row.item {
         Item::Provider(Target::App(id)) => {
+            if row.panel.as_ref().is_some_and(|o| o.reason.is_none()) {
+                items.push(("Use the panel".to_string(), "panel".to_string()));
+            }
             if let Some(app) = gio_unix::DesktopAppInfo::new(id) {
                 for action in app.list_actions() {
                     items.push((app.action_name(&action).to_string(), format!("desktop:{action}")));
@@ -1190,6 +1231,7 @@ fn run(shared: &Arc<Shared>, row: &Row, query: &str, how: &str, confirmed: bool)
             shared.commands.open_app(&o.app_id, serde_json::Map::new())?;
             Ok(Done::Closed)
         }
+        Item::Provider(Target::App(_)) if how == "panel" && row.panel.as_ref().is_some_and(|o| o.reason.is_none()) => Ok(Done::FocusPanel),
         Item::Provider(Target::Shared(id)) if how == "enter" => {
             let c = shared.commands.plain(id).ok_or_else(|| anyhow!("That action isn't offered any more"))?;
             run_command(shared, &c, confirmed, &row.id)
@@ -1711,6 +1753,7 @@ fn publish_results(shared: &Shared, link: &nyx_ui_link::Link, p: &Paths, g: u64,
     }
     let c = p.load().unwrap_or_default();
     let mut sorted = found.to_vec();
+    fold_panels(&mut sorted);
     sorted.sort_by_key(|r| r.category().0);
     let rows: Vec<Value> = sorted.iter().map(|r| r.json(&c.favorites)).collect();
     *shared.rows.lock().unwrap() = (g, q.to_string(), sorted.into_iter().map(|r| (r.id.clone(), r)).collect());
@@ -1842,6 +1885,49 @@ mod tests {
             assert!(!glimpse_peer(&peer(Some(refused))), "{refused}");
         }
         assert!(!glimpse_peer(&peer(None)));
+    }
+
+    #[test]
+    fn an_app_s_panel_goes_on_the_app_s_own_row() {
+        let offer = |app_id: &str, name: &str| PanelOffer {
+            app: name.into(),
+            app_id: app_id.into(),
+            icon: app_id.into(),
+            panel: name.to_lowercase(),
+            query: String::new(),
+            topics: vec![],
+            size: Value::Null,
+            available: true,
+            reason: None,
+        };
+        let app = |id: &str, title: &str| Row {
+            id: format!("app:{id}.desktop"),
+            title: title.into(),
+            subtitle: String::new(),
+            reason: String::new(),
+            kind: "app",
+            icon: id.into(),
+            panel: None,
+            item: Item::Provider(Target::App(format!("{id}.desktop"))),
+        };
+        let weather = "io.github.design_nexus.nyx.Weather";
+        let mut rows = vec![
+            panel_row(offer(weather, "Weather")),
+            panel_row(offer("io.github.design_nexus.nyx.Settings", "Devices")),
+            app("io.github.design_nexus.nyx.Calendar", "Calendar"),
+            app(weather, "Weather"),
+        ];
+        fold_panels(&mut rows);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [&format!("app:{weather}.desktop"), "panel:io.github.design_nexus.nyx.Settings", "app:io.github.design_nexus.nyx.Calendar.desktop"]
+        );
+        let json = rows[0].json(&[]);
+        assert_eq!((json["kind"].as_str(), json["panel"]["id"].as_str()), (Some("app"), Some("weather")));
+        let hints: Vec<&str> = json["hints"].as_array().unwrap().iter().filter_map(|h| h["label"].as_str()).collect();
+        assert_eq!(hints, ["Open", "Use the panel", "Pin"]);
+        assert!(rows[2].panel.is_none());
     }
 
     #[test]

@@ -8,6 +8,9 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: what's playing on the left, the playlists beside it.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int art: wide ? 80 : 96
     readonly property var playback: host ? host.topic("playback") : ({})
     readonly property var now: playback.state || ({})
     readonly property var track: now.track || null
@@ -62,15 +65,15 @@ FocusScope {
 
     Column {
         id: top
-        width: parent.width
-        spacing: 12
+        width: panel.wide ? 400 : parent.width
+        spacing: panel.wide ? 10 : 12
 
         Row {
             width: parent.width
             spacing: 14
             Rectangle {
-                width: 96
-                height: 96
+                width: panel.art
+                height: panel.art
                 radius: Style.radiusCard
                 color: Style.card
                 clip: true
@@ -90,7 +93,7 @@ FocusScope {
                 }
             }
             Column {
-                width: parent.width - 110
+                width: parent.width - panel.art - 14
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 3
                 Label {
@@ -166,7 +169,7 @@ FocusScope {
                 height: 1
             }
             Slider {
-                width: 180
+                width: panel.wide ? 160 : 180
                 anchors.verticalCenter: parent.verticalCenter
                 from: 0
                 to: 100
@@ -183,8 +186,9 @@ FocusScope {
 
     Label {
         id: heading
-        anchors.top: top.bottom
-        anchors.topMargin: 14
+        x: panel.wide ? top.width + 16 : 0
+        anchors.top: panel.wide ? parent.top : top.bottom
+        anchors.topMargin: panel.wide ? 0 : 14
         text: panel.filter === "" ? "Playlists" : "Playlists matching “" + panel.host.query + "”"
         role: "caption"
         dim: true
@@ -192,11 +196,12 @@ FocusScope {
 
     ListView {
         id: list
+        x: heading.x
         anchors.top: heading.bottom
         anchors.topMargin: 4
         anchors.bottom: footer.top
         anchors.bottomMargin: 6
-        width: parent.width
+        width: parent.width - x
         clip: true
         model: panel.lists
         currentIndex: panel.picked

@@ -12,6 +12,12 @@ to the app only through the host (`PanelHost.qml`): `host.query`, `host.topic(na
 `host.back()`. It is created when its result is selected and destroyed when it isn't,
 which ends its topics; it draws with `Nyx.Ui` only.
 
+In Glimpse a panel has the dropdown's slot: the full width across the top, 728 by about
+230, the same for every panel and never larger (`host.slot` is `"dropdown"`, and
+`host.compact` is true). Lay it out wide and short there: one row of what matters most,
+with lists as a strip beside it. Pinned, it has its own surface at the size its app asks
+for (`nyx.panel.size`, `min` and `preferred`), and `host.slot` is `"pinned"`.
+
 Ctrl+P pins the shown panel (and unpins it): it stays on screen after Glimpse closes, in
 `Pins.qml`, as a persistent overlay Shell Core pins and places (`PinOverlay`; Nyx.Shell's
 standalone mode on Omarchy). The backend keeps the pins in Glimpse's settings

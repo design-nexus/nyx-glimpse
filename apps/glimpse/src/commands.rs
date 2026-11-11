@@ -48,6 +48,64 @@ pub struct Command {
     pub result: Option<ResultKind>,
 }
 
+/// Icons for the words in action names, as Umbra (the suite's icon theme) draws them.
+const VERB_ICONS: &[(&[&str], &str)] = &[
+    (&["search", "find"], "edit-find-symbolic"),
+    (&["query", "ask"], "dialog-question-symbolic"),
+    (&["open", "show"], "document-open-symbolic"),
+    (&["reveal"], "folder-open-symbolic"),
+    (&["list", "lists", "pages", "page", "playlists", "routines", "queue"], "view-list-symbolic"),
+    (&["location", "locations"], "find-location-symbolic"),
+    (&["status", "capabilities", "info", "current", "now"], "dialog-information-symbolic"),
+    (&["today"], "task-due-symbolic"),
+    (&["next", "upcoming", "times", "slots"], "appointment-soon-symbolic"),
+    (&["play", "start", "resume", "control"], "media-playback-start-symbolic"),
+    (&["pause"], "media-playback-pause-symbolic"),
+    (&["stop"], "media-playback-stop-symbolic"),
+    (&["restart", "refresh", "reload", "sync"], "view-refresh-symbolic"),
+    (&["skip"], "media-skip-forward-symbolic"),
+    (&["previous"], "media-skip-backward-symbolic"),
+    (&["volume", "ring"], "audio-volume-high-symbolic"),
+    (&["output", "outputs"], "audio-speakers-symbolic"),
+    (&["add", "create", "new"], "list-add-symbolic"),
+    (&["append"], "insert-text-symbolic"),
+    (&["edit", "update", "rename", "set"], "document-edit-symbolic"),
+    (&["value"], "preferences-other-symbolic"),
+    (&["replace"], "edit-find-replace-symbolic"),
+    (&["delete", "remove"], "edit-delete-symbolic"),
+    (&["trash"], "user-trash-symbolic"),
+    (&["clear"], "edit-clear-all-symbolic"),
+    (&["restore", "undo"], "edit-undo-symbolic"),
+    (&["complete", "done", "select", "choose", "use"], "object-select-symbolic"),
+    (&["copy"], "edit-copy-symbolic"),
+    (&["move"], "edit-cut-symbolic"),
+    (&["paste", "clip"], "edit-paste-symbolic"),
+    (&["send", "share"], "document-send-symbolic"),
+    (&["lock"], "system-lock-screen-symbolic"),
+    (&["unlock"], "changes-allow-symbolic"),
+    (&["private"], "view-conceal-symbolic"),
+    (&["read"], "text-x-generic-symbolic"),
+    (&["devices"], "phone-symbolic"),
+    (&["monitors"], "video-display-symbolic"),
+    (&["switch"], "system-shutdown-symbolic"),
+    (&["light"], "display-brightness-symbolic"),
+    (&["scene"], "preferences-desktop-appearance-symbolic"),
+    (&["climate"], "weather-few-clouds-symbolic"),
+];
+
+/// The action's own icon (`x-nyx.icon`), else one for the last word of its name that
+/// has one (`location` in `select_location`), else a neutral one: never the app's tile.
+fn action_icon(a: &nyx_actions::spec::Action) -> String {
+    if !a.icon.is_empty() {
+        return a.icon.clone();
+    }
+    a.verb()
+        .rsplit(['.', '_'])
+        .find_map(|word| VERB_ICONS.iter().find(|(words, _)| words.contains(&word)).map(|(_, icon)| *icon))
+        .unwrap_or("system-run-symbolic")
+        .to_string()
+}
+
 impl Command {
     fn new(entry: &Entry, listed: &Listed, arguments: Map<String, Value>, fill: String, explicit: bool) -> Command {
         let a = &listed.action;
@@ -55,7 +113,7 @@ impl Command {
         Command {
             app: entry.app.name.clone(),
             app_id: entry.app.app.clone(),
-            icon: if entry.app.icon.is_empty() { "system-run-symbolic".into() } else { entry.app.icon.clone() },
+            icon: action_icon(a),
             action: a.id.clone(),
             title: a.title.clone(),
             description: a.description.clone(),
@@ -507,6 +565,30 @@ mod tests {
 
     fn rows(q: &str) -> Vec<Command> {
         Commands::new(Options { dirs: vec![], bus_address: None, live: false }).rows(&catalog(), q, false)
+    }
+
+    #[test]
+    fn each_action_has_its_own_icon_not_the_app_s() {
+        let action = |name: &str, icon: Option<&str>| {
+            let mut x = json!({"risk": "read_only"});
+            if let Some(icon) = icon {
+                x["icon"] = json!(icon);
+            }
+            let d = nyx_actions::Description::from_value(
+                &json!({"tools": [{"name": name, "description": "Do it.", "x-nyx": x}],
+                    "nyx": {"api": 2, "app": "io.github.design_nexus.nyx.Weather", "name": "Weather", "namespaces": [name.split('.').next().unwrap()], "bus_name": "io.github.design_nexus.nyx.Weather"}}),
+                None,
+            )
+            .unwrap();
+            action_icon(&d.actions[0])
+        };
+        assert_eq!(action("weather.current", Some("weather-few-clouds-symbolic")), "weather-few-clouds-symbolic");
+        assert_eq!(action("weather.select_location", None), "find-location-symbolic");
+        assert_eq!(action("notes.vault_search", None), "edit-find-symbolic");
+        assert_eq!(action("files.trash.restore", None), "edit-undo-symbolic");
+        assert_eq!(action("music.play", None), "media-playback-start-symbolic");
+        assert_eq!(action("example.frobnicate", None), "system-run-symbolic");
+        assert!(rows("notes").iter().all(|c| c.icon.ends_with("-symbolic")), "never the app's tile");
     }
 
     #[test]

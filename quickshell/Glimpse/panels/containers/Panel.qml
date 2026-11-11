@@ -8,6 +8,8 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: how many run on the left, the list beside it.
+    readonly property bool wide: host !== null && host.compact
     readonly property var live: host ? host.topic("workloads") : ({})
     readonly property var all: (live.state && live.state.items) || []
     readonly property string filter: host ? host.query.trim().toLowerCase() : ""
@@ -53,12 +55,27 @@ FocusScope {
         e.accepted = true;
     }
 
+    Column {
+        visible: panel.wide
+        width: footer.width
+        spacing: 2
+        Label {
+            text: panel.all.filter(w => w.running).length + " running"
+            role: "title"
+        }
+        Label {
+            text: "of " + panel.all.length + " on this computer"
+            dim: true
+        }
+    }
+
     ListView {
         id: list
+        x: panel.wide ? footer.width + 16 : 0
         anchors.top: parent.top
-        anchors.bottom: footer.top
-        anchors.bottomMargin: 6
-        width: parent.width
+        anchors.bottom: panel.wide ? parent.bottom : footer.top
+        anchors.bottomMargin: panel.wide ? 0 : 6
+        width: parent.width - x
         clip: true
         model: panel.shown
         delegate: Rectangle {
@@ -141,9 +158,10 @@ FocusScope {
     Item {
         id: footer
         anchors.bottom: parent.bottom
-        width: parent.width
+        width: panel.wide ? 200 : parent.width
         height: openApp.height
         Label {
+            visible: !panel.wide
             anchors.verticalCenter: parent.verticalCenter
             text: panel.all.filter(w => w.running).length + " of " + panel.all.length + " running"
             role: "caption"
@@ -151,7 +169,7 @@ FocusScope {
         }
         Button {
             id: openApp
-            anchors.right: parent.right
+            anchors.right: panel.wide ? undefined : parent.right
             text: "Open Containers"
             onClicked: panel.host.open(panel.pickedOne ? { name: panel.pickedOne.title } : {})
         }

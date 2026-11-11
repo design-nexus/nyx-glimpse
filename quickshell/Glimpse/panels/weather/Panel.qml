@@ -8,9 +8,12 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: the weather now on the left, the days beside it.
+    readonly property bool wide: host !== null && host.compact
     readonly property var live: host ? host.topic("now") : ({})
     readonly property var now: live.state || ({})
     readonly property string failure: now.error || ""
+    readonly property bool shown: failure === "" && now.temperature !== undefined
     readonly property string words: host ? host.query.trim() : ""
     property var answer: null
 
@@ -61,11 +64,13 @@ FocusScope {
     }
 
     Column {
-        visible: panel.failure === "" && panel.now.temperature !== undefined
-        width: parent.width
-        spacing: 14
+        id: main
+        visible: panel.shown
+        width: panel.wide ? 300 : parent.width
+        spacing: panel.wide ? 10 : 14
 
         Row {
+            width: parent.width
             spacing: 14
             Icon {
                 anchors.verticalCenter: parent.verticalCenter
@@ -75,13 +80,16 @@ FocusScope {
             }
             Column {
                 anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 62
                 Label {
                     text: panel.now.temperature || ""
                     role: "readout"
                 }
                 Label {
+                    width: parent.width
                     text: (panel.now.condition || "") + " · " + (panel.now.location || "")
                     dim: true
+                    elide: Text.ElideRight
                 }
             }
         }
@@ -95,78 +103,92 @@ FocusScope {
         }
 
         Repeater {
-            model: (panel.now.alerts || []).slice(0, 2)
+            model: (panel.now.alerts || []).slice(0, panel.wide ? 1 : 2)
             delegate: Label {
                 required property var modelData
                 width: parent.width
                 text: "⚠ " + (modelData.headline || modelData.event || "Weather alert")
                 color: Style.warning
                 wrapMode: Text.Wrap
-            }
-        }
-
-        Row {
-            width: parent.width
-            spacing: 6
-            Repeater {
-                model: panel.now.days || []
-                delegate: Card {
-                    required property var modelData
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: panel.day(modelData.date) + ", " + modelData.condition + ", " + modelData.high + " / " + modelData.low + (modelData.rain_pct > 0 ? ", " + modelData.rain_pct + "% rain" : "")
-                    width: (parent.width - 6 * 4) / 5
-                    height: 104
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Label {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: panel.day(modelData.date)
-                            role: "caption"
-                            dim: true
-                        }
-                        Icon {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            name: modelData.icon
-                            size: 22
-                        }
-                        Label {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: modelData.high + " / " + modelData.low
-                            role: "caption"
-                        }
-                        Label {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            visible: modelData.rain_pct > 0
-                            text: modelData.rain_pct + "% rain"
-                            role: "caption"
-                            dim: true
-                        }
-                    }
-                }
-            }
-        }
-
-        Column {
-            visible: panel.answer !== null
-            width: parent.width
-            spacing: 2
-            Label {
-                width: parent.width
-                text: panel.answer ? (panel.answer.title || panel.answer.error || "") : ""
-                strong: true
-                wrapMode: Text.Wrap
-            }
-            Label {
-                width: parent.width
-                text: panel.answer ? panel.answer.subtitle || "" : ""
-                dim: true
-                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
             }
         }
     }
 
+    Row {
+        id: days
+        visible: panel.shown
+        x: panel.wide ? main.width + 16 : 0
+        y: panel.wide ? 0 : main.height + 14
+        width: panel.wide ? parent.width - main.width - 16 : parent.width
+        spacing: 6
+        Repeater {
+            model: panel.now.days || []
+            delegate: Card {
+                required property var modelData
+                Accessible.role: Accessible.StaticText
+                Accessible.name: panel.day(modelData.date) + ", " + modelData.condition + ", " + modelData.high + " / " + modelData.low + (modelData.rain_pct > 0 ? ", " + modelData.rain_pct + "% rain" : "")
+                width: (days.width - 6 * 4) / 5
+                height: panel.wide ? Math.max(104, panel.height - footer.height - 12 - (panel.answer !== null ? 48 : 0)) : 104
+                Column {
+                    anchors.centerIn: parent
+                    spacing: 4
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: panel.day(modelData.date)
+                        role: "caption"
+                        dim: true
+                    }
+                    Icon {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        name: modelData.icon
+                        size: 22
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: modelData.high + " / " + modelData.low
+                        role: "caption"
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        visible: modelData.rain_pct > 0
+                        text: modelData.rain_pct + "% rain"
+                        role: "caption"
+                        dim: true
+                    }
+                }
+            }
+        }
+    }
+
+    // The answer to the words typed after `weather`.
+    Column {
+        visible: panel.shown && panel.answer !== null
+        x: days.x
+        y: days.y + days.height + (panel.wide ? 10 : 14)
+        width: days.width
+        spacing: 2
+        Label {
+            width: parent.width
+            text: panel.answer ? (panel.answer.title || panel.answer.error || "") : ""
+            strong: true
+            wrapMode: Text.Wrap
+            maximumLineCount: panel.wide ? 1 : 3
+            elide: Text.ElideRight
+        }
+        Label {
+            width: parent.width
+            text: panel.answer ? panel.answer.subtitle || "" : ""
+            dim: true
+            wrapMode: Text.Wrap
+            maximumLineCount: panel.wide ? 1 : 3
+            elide: Text.ElideRight
+        }
+    }
+
     Item {
+        id: footer
         anchors.bottom: parent.bottom
         width: parent.width
         height: openWeather.height

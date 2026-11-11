@@ -151,6 +151,7 @@ Scope {
 
                 PanelHost {
                     id: host
+                    slot: "pinned"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: bar.bottom

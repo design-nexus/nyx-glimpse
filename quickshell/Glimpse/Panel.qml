@@ -2,8 +2,9 @@ import QtQuick
 import QtQuick.Effects
 import Nyx.Ui
 
-// The launcher panel (the GTK panel's `glimpse-frame`): 760 wide, 56 tall with an empty
-// search, 460 once there is something under it.
+// The launcher panel: 760 wide, 56 tall with an empty search, and one fixed height once
+// there is something under it; nothing it shows changes its size. When the results hold
+// an app's panel (`weather`), the panel runs across the top and the results below it.
 Item {
     id: panel
 
@@ -13,13 +14,31 @@ Item {
     readonly property bool expanded: glimpse.expanded
     property int maxWidth: 10000
     property int maxHeight: 10000
-    // A selected panel's preferred size widens and heightens the frame, within the screen.
-    readonly property var miniSize: glimpse.row && glimpse.row.kind === "panel" && glimpse.row.panel ? glimpse.row.panel.size : null
-    readonly property var preferred: miniSize && miniSize.preferred ? miniSize.preferred : null
-    readonly property int expandedHeight: Math.min(maxHeight, Math.max(460, preferred ? preferred[1] + 54 + 36 + 18 : 0))
+    readonly property int expandedHeight: Math.min(maxHeight, 520)
+    // The app panel's slot in the stacked view.
+    readonly property int slotHeight: 250
 
-    width: Math.min(maxWidth, Math.max(760, preferred ? 300 + preferred[0] + 32 : 0))
+    width: Math.min(maxWidth, 760)
     height: expanded ? expandedHeight : 56
+
+    // The app panel the results offer, kept while the next search is on its way so
+    // typing on doesn't switch the layout back and forth.
+    property var appOffer: null
+    readonly property bool stacked: appOffer !== null && expanded
+    function takeOffer() {
+        if (!glimpse.current)
+            return;
+        const r = glimpse.rows.find(x => x.panel && x.panel.available);
+        appOffer = r ? r.panel : null;
+    }
+    Connections {
+        target: panel.glimpse
+        function onRowsChanged() {
+            panel.takeOffer();
+        }
+    }
+    onExpandedChanged: if (!expanded)
+        appOffer = null
 
     function setText(t) {
         input.text = t;
@@ -96,6 +115,9 @@ Item {
                 g.activate(g.selected, "favorite");
         } else if (e.key === Qt.Key_Up && input.text === "") {
             actions.openHistory();
+        } else if (e.key === Qt.Key_Escape && g.ranId !== "" && stacked) {
+            // A command's result gives the slot back to the app's panel.
+            g.ranId = "";
         } else if (e.key === Qt.Key_Escape) {
             g.hide();
         } else if (e.key === Qt.Key_Down || e.key === Qt.Key_Up || e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) {
@@ -110,6 +132,9 @@ Item {
             g.togglePin(preview.panelOffer);
         } else if (ctrl && e.key === Qt.Key_P && preview.playing !== undefined && preview.hasMedia) {
             preview.togglePlayback();
+        } else if (e.key === Qt.Key_Tab && g.row && g.row.panel && preview.panelOffer) {
+            // Into the app's panel; Escape there gives the keyboard back.
+            preview.focusPanel();
         } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
             // A command's completion; the keyboard stays in the search either way.
             if (g.row && g.row.fill)
@@ -213,8 +238,9 @@ Item {
                 Accessible.role: Accessible.List
                 Accessible.name: "Results"
                 visible: !content.empty
-                width: 300
-                height: parent.height
+                y: panel.stacked ? panel.slotHeight : 0
+                width: panel.stacked ? parent.width : 300
+                height: parent.height - y
                 bottomMargin: 8
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
@@ -240,10 +266,11 @@ Item {
 
             PreviewPane {
                 id: preview
-                visible: !content.empty && panel.glimpse.config.preview !== false
-                x: list.width
-                width: parent.width - list.width
-                height: parent.height
+                visible: !content.empty && (panel.stacked || panel.glimpse.config.preview !== false)
+                x: panel.stacked ? 0 : list.width
+                width: panel.stacked ? parent.width : parent.width - list.width
+                height: panel.stacked ? panel.slotHeight : parent.height
+                appOffer: panel.stacked ? panel.appOffer : null
                 glimpse: panel.glimpse
                 backend: panel.backend
                 onTyped: (t, cursor) => {

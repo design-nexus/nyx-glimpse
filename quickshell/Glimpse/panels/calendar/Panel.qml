@@ -8,6 +8,9 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: today on the left, the add bar and events beside it.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int listX: wide ? footer.width + 16 : 0
     readonly property var live: host ? host.topic("upcoming") : ({})
     readonly property var upcoming: live.state || ({})
     readonly property string failure: upcoming.error || ""
@@ -90,17 +93,38 @@ FocusScope {
         onAction: panel.host.open({})
     }
 
+    Column {
+        visible: panel.wide && panel.failure === ""
+        width: footer.width
+        spacing: 2
+        Label {
+            text: new Date().toLocaleDateString(Qt.locale(), "dddd")
+            role: "title"
+        }
+        Label {
+            text: new Date().toLocaleDateString(Qt.locale(), "d MMMM yyyy")
+            dim: true
+        }
+        Label {
+            readonly property int n: panel.eventRows.length
+            text: n === 0 ? "Nothing coming up" : n === 1 ? "1 event coming up" : n + " events coming up"
+            role: "caption"
+            dim: true
+        }
+    }
+
     Rectangle {
         id: addBar
         visible: panel.failure === "" && panel.words !== ""
-        width: parent.width
+        x: panel.listX
+        width: parent.width - x
         height: visible ? 44 : 0
         radius: Style.radiusSmall
         color: Style.card
         Icon {
             x: 12
             anchors.verticalCenter: parent.verticalCenter
-            name: "appointment-new-symbolic"
+            name: "list-add-symbolic"
             size: 18
             color: Style.accent
         }
@@ -125,11 +149,12 @@ FocusScope {
     ListView {
         id: list
         visible: panel.failure === ""
+        x: panel.listX
         anchors.top: addBar.bottom
         anchors.topMargin: addBar.visible ? 8 : 0
-        anchors.bottom: footer.top
-        anchors.bottomMargin: 6
-        width: parent.width
+        anchors.bottom: panel.wide ? parent.bottom : footer.top
+        anchors.bottomMargin: panel.wide ? 0 : 6
+        width: parent.width - x
         clip: true
         model: panel.rows
         delegate: Item {
@@ -201,11 +226,11 @@ FocusScope {
     Item {
         id: footer
         anchors.bottom: parent.bottom
-        width: parent.width
+        width: panel.wide ? 200 : parent.width
         height: openCalendar.height
         Button {
             id: openCalendar
-            anchors.right: parent.right
+            anchors.right: panel.wide ? undefined : parent.right
             visible: panel.failure === ""
             text: "Open Calendar"
             onClicked: panel.openAt(panel.pickedEvent)

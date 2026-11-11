@@ -16,7 +16,7 @@ FocusScope {
 
     Column {
         anchors.fill: parent
-        anchors.margins: 18
+        anchors.margins: panel.host && panel.host.compact ? 8 : 18
         spacing: 12
 
         Label {

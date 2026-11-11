@@ -52,6 +52,9 @@ Scope {
     property string message: ""
     // A command's result is in its preview: the pane loads it again.
     property int previewSerial: 0
+    // The command whose result is shown in place of the app's panel, until another
+    // result is selected or Escape.
+    property string ranId: ""
 
     function hide() {
         backend.request("Hide", {}, null);
@@ -62,6 +65,7 @@ Scope {
         browsing = false;
         armed = "";
         message = "";
+        ranId = "";
         backend.request("Query", { text: text, generation: generation }, null);
     }
     // Pin the shown app panel (it stays after Glimpse closes), or unpin it.
@@ -101,8 +105,10 @@ Scope {
             } else if (ok.ask) {
                 armed = r.id;
                 say(ok.ask);
-                if (ok.preview)
+                if (ok.preview) {
+                    ranId = r.id;
                     previewSerial += 1;
+                }
             } else if (ok.done) {
                 armed = "";
                 root.hide();
@@ -117,8 +123,10 @@ Scope {
                 armed = "";
                 if (ok.message)
                     say(ok.message);
-                if (ok.preview)
+                if (ok.preview) {
+                    ranId = r.id;
                     previewSerial += 1;
+                }
                 if (ok.rerun)
                     root.search(panel.text);
             }
@@ -129,6 +137,8 @@ Scope {
     onSelectedChanged: {
         const r = rows[selected];
         selectedId = r ? r.id : "";
+        if (ranId !== "" && selectedId !== ranId)
+            ranId = "";
         if (armed !== "" && selectedId !== armed) {
             armed = "";
             message = "";
@@ -264,6 +274,10 @@ Scope {
         function pin(): void {
             if (panel.shownPanel())
                 root.togglePin(panel.shownPanel());
+        }
+        // The frame's size and layout, which no result may change once it's open.
+        function size(): string {
+            return panel.width + "x" + panel.height + (panel.stacked ? " stacked" : "");
         }
     }
 }

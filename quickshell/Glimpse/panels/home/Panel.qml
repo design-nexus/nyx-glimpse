@@ -8,6 +8,9 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: the scenes down the left, the devices beside them.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int listX: wide && scenes.length > 0 ? 216 : 0
     readonly property var live: host ? host.topic("home") : ({})
     readonly property var home: live.state || ({})
     readonly property string failure: home.error || ""
@@ -105,7 +108,9 @@ FocusScope {
     Column {
         id: top
         visible: panel.failure === ""
-        width: parent.width
+        width: panel.wide ? 200 : parent.width
+        height: panel.wide ? parent.height - footer.height - 6 : implicitHeight
+        clip: panel.wide
         spacing: 8
         Label {
             visible: panel.scenes.length > 0
@@ -134,11 +139,12 @@ FocusScope {
     ListView {
         id: list
         visible: panel.failure === ""
-        anchors.top: top.bottom
-        anchors.topMargin: 8
+        x: panel.listX
+        anchors.top: panel.wide ? parent.top : top.bottom
+        anchors.topMargin: panel.wide ? 0 : 8
         anchors.bottom: footer.top
         anchors.bottomMargin: 6
-        width: parent.width
+        width: parent.width - x
         clip: true
         model: panel.rows
         delegate: Item {

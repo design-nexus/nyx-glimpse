@@ -8,6 +8,9 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: what's due on the left, the add bar and list beside it.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int listX: wide ? footer.width + 16 : 0
     readonly property var live: host ? host.topic("today") : ({})
     readonly property var today: live.state || ({})
     readonly property string failure: today.error || ""
@@ -75,10 +78,26 @@ FocusScope {
         onAction: panel.host.open({})
     }
 
+    Column {
+        visible: panel.wide && panel.failure === ""
+        width: footer.width
+        spacing: 2
+        Label {
+            text: "Today"
+            role: "title"
+        }
+        Label {
+            readonly property int late: panel.tasks.filter(t => t.overdue).length
+            text: panel.tasks.length === 0 ? "Nothing due" : panel.tasks.length + " due" + (late > 0 ? " · " + late + " overdue" : "")
+            color: late > 0 ? Style.danger : Style.dimText
+        }
+    }
+
     Rectangle {
         id: addBar
         visible: panel.failure === "" && panel.words !== ""
-        width: parent.width
+        x: panel.listX
+        width: parent.width - x
         height: visible ? 44 : 0
         radius: Style.radiusSmall
         color: Style.card
@@ -109,7 +128,7 @@ FocusScope {
 
     Label {
         id: heading
-        visible: panel.failure === "" && panel.tasks.length > 0
+        visible: panel.failure === "" && panel.tasks.length > 0 && !panel.wide
         anchors.top: addBar.bottom
         anchors.topMargin: addBar.visible ? 10 : 0
         text: "Today"
@@ -120,11 +139,12 @@ FocusScope {
     ListView {
         id: list
         visible: panel.failure === ""
-        anchors.top: heading.bottom
-        anchors.topMargin: 4
-        anchors.bottom: footer.top
-        anchors.bottomMargin: 6
-        width: parent.width
+        x: panel.listX
+        anchors.top: panel.wide ? addBar.bottom : heading.bottom
+        anchors.topMargin: panel.wide ? (addBar.visible ? 8 : 0) : 4
+        anchors.bottom: panel.wide ? parent.bottom : footer.top
+        anchors.bottomMargin: panel.wide ? 0 : 6
+        width: parent.width - x
         clip: true
         model: panel.tasks
         delegate: Rectangle {
@@ -142,7 +162,7 @@ FocusScope {
                 id: check
                 x: 4
                 anchors.verticalCenter: parent.verticalCenter
-                icon: "checkbox-symbolic"
+                icon: "object-select-symbolic"
                 tooltip: "Mark " + row.modelData.title + " done (Space)"
                 onClicked: panel.complete(row.modelData)
             }
@@ -184,11 +204,11 @@ FocusScope {
     Item {
         id: footer
         anchors.bottom: parent.bottom
-        width: parent.width
+        width: panel.wide ? 200 : parent.width
         height: openReminders.height
         Button {
             id: openReminders
-            anchors.right: parent.right
+            anchors.right: panel.wide ? undefined : parent.right
             visible: panel.failure === ""
             text: "Open Reminders"
             onClicked: panel.host.open({})

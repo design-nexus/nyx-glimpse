@@ -62,8 +62,8 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             name: r.modelData.icon
             size: 20
-            // An app's own icon (an app, or one of its commands) keeps its colours.
-            recolor: r.modelData.icon.endsWith("-symbolic") || (r.modelData.kind !== "app" && r.modelData.kind !== "command")
+            // Symbolic glyphs take the row's colour; an app's own icon keeps its colours.
+            recolor: r.modelData.icon.endsWith("-symbolic")
             color: r.selected ? Style.accent : Style.dimText
         }
 

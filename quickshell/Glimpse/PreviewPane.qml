@@ -21,9 +21,13 @@ Item {
     signal typed(string text, int cursor)
     signal refocus
 
-    // An app's panel takes the pane while its result is selected.
+    // In the stacked view, the app's panel stays while its results are browsed, and a
+    // command's result takes its place; otherwise a panel shows while its row is selected.
+    property var appOffer: null
+    readonly property bool resultShown: glimpse.ranId !== ""
     readonly property var selectedRow: glimpse.rows.find(x => x.id === glimpse.selectedId) || null
-    readonly property var shownOffer: selectedRow && selectedRow.kind === "panel" && selectedRow.panel && selectedRow.panel.available ? selectedRow.panel : null
+    readonly property var rowOffer: selectedRow && selectedRow.panel && selectedRow.panel.available ? selectedRow.panel : null
+    readonly property var shownOffer: appOffer ? (resultShown ? null : appOffer) : rowOffer
     // While the next search is on its way, the last one's: typing on doesn't rebuild it.
     property var heldOffer: null
     readonly property var panelOffer: glimpse.current ? shownOffer : heldOffer

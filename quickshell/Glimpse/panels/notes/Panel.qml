@@ -9,6 +9,10 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: what's searched and the buttons on the left, the notes
+    // beside them.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int listX: wide ? footer.width + 16 : 0
     readonly property string words: host ? host.query.trim() : ""
     property var hits: []
     property string failure: ""
@@ -92,9 +96,26 @@ FocusScope {
         onAction: panel.host.open({})
     }
 
+    Column {
+        visible: panel.wide && panel.failure === ""
+        width: footer.width
+        spacing: 2
+        Label {
+            text: "Notes"
+            role: "title"
+        }
+        Label {
+            width: parent.width
+            text: panel.words === "" ? "Searches your notes as you type" : panel.searching ? "Searching…" : panel.hits.length + (panel.hits.length === 1 ? " note matches" : " notes match")
+            dim: true
+            wrapMode: Text.Wrap
+        }
+    }
+
     StateView {
         anchors.centerIn: parent
-        width: parent.width
+        anchors.horizontalCenterOffset: panel.listX / 2
+        width: parent.width - panel.listX
         visible: panel.failure === "" && panel.words === ""
         kind: "empty"
         icon: "edit-find-symbolic"
@@ -104,10 +125,11 @@ FocusScope {
     ListView {
         id: list
         visible: panel.failure === "" && panel.words !== ""
+        x: panel.listX
         anchors.top: parent.top
-        anchors.bottom: footer.top
-        anchors.bottomMargin: 6
-        width: parent.width
+        anchors.bottom: panel.wide ? parent.bottom : footer.top
+        anchors.bottomMargin: panel.wide ? 0 : 6
+        width: parent.width - x
         clip: true
         model: panel.hits
         delegate: Rectangle {
@@ -164,16 +186,18 @@ FocusScope {
     Item {
         id: footer
         anchors.bottom: parent.bottom
-        width: parent.width
-        height: openNotes.height
+        width: panel.wide ? 200 : parent.width
+        height: panel.wide && newNote.visible ? newNote.height + 6 + openNotes.height : openNotes.height
         Button {
+            id: newNote
             visible: panel.failure === "" && panel.words !== ""
-            text: "New note “" + panel.words + "”"
+            text: panel.wide ? "New note" : "New note “" + panel.words + "”"
             onClicked: panel.propose()
         }
         Button {
             id: openNotes
-            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.right: panel.wide ? undefined : parent.right
             text: "Open Notes"
             onClicked: panel.host.open({})
         }

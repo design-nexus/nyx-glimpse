@@ -10,6 +10,9 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: the places down the left, the folder beside them.
+    readonly property bool wide: host !== null && host.compact
+    readonly property int listX: wide ? 196 : 0
     property string path: ""
     property string shown: ""
     property string parentPath: ""
@@ -152,7 +155,9 @@ FocusScope {
 
     Flow {
         id: placesRow
-        width: parent.width
+        width: panel.wide ? 180 : parent.width
+        height: panel.wide ? parent.height - footer.height - 6 : implicitHeight
+        clip: panel.wide
         spacing: 6
         Repeater {
             model: panel.places
@@ -167,9 +172,11 @@ FocusScope {
 
     Row {
         id: crumbRow
-        anchors.top: placesRow.bottom
-        anchors.topMargin: 10
-        width: parent.width
+        x: panel.listX
+        anchors.top: panel.wide ? parent.top : placesRow.bottom
+        anchors.topMargin: panel.wide ? 6 : 10
+        width: parent.width - x
+        clip: true
         spacing: 2
         Label {
             visible: panel.searching || panel.crumbs.length === 0
@@ -211,7 +218,8 @@ FocusScope {
         anchors.topMargin: 6
         anchors.bottom: footer.top
         anchors.bottomMargin: 6
-        width: panel.picture ? parent.width - 172 : parent.width
+        x: panel.listX
+        width: parent.width - x - (panel.picture ? 172 : 0)
         clip: true
         model: panel.items
         currentIndex: panel.picked

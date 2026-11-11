@@ -44,7 +44,7 @@ impl Cb {
                 "url" => "web-browser-symbolic",
                 "files" => "folder-documents-symbolic",
                 "code" => "applications-engineering-symbolic",
-                "rich" | "html" => "format-text-rich-symbolic",
+                "rich" | "html" => "text-html-symbolic",
                 _ => "edit-paste-symbolic",
             },
             Cb::Unavailable => "dialog-warning-symbolic",

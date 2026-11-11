@@ -1314,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "nyx-actions"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=9b195878e6bb3bf6f8842f3b3bfa9ddb1ff49fd5#9b195878e6bb3bf6f8842f3b3bfa9ddb1ff49fd5"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=eabed7896937775faeb69f0d9129e9af67d935ba#eabed7896937775faeb69f0d9129e9af67d935ba"
 dependencies = [
  "futures-util",
  "jsonschema",

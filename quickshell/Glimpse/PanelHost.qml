@@ -11,7 +11,10 @@ import Nyx.Ui
 // - `host.run(action, arguments, done)`: one of the app's own actions, checked as any
 //   other call; one that asks first waits for the person's go-ahead here;
 // - `host.open(arguments)`: the full app, at `arguments` when the app can open there;
-// - `host.say(text)`, and `host.back()` to give the keyboard back to the search.
+// - `host.say(text)`, and `host.back()` to give the keyboard back to the search;
+// - `host.slot`: "dropdown" (across the top of Glimpse, `host.width` by `host.height`,
+//   wide and short, always the same size) or "pinned" (its own surface, at the app's
+//   `size`).
 FocusScope {
     id: host
 
@@ -20,6 +23,8 @@ FocusScope {
     // The selected result's `panel`: {id, app, name, icon, query, topics, size}.
     required property var offer
 
+    property string slot: "dropdown"
+    readonly property bool compact: slot === "dropdown"
     readonly property string query: offer ? (offer.query || "") : ""
     readonly property string appId: offer ? offer.app : ""
     // A call that asks first, waiting for Enter or the button.

@@ -9,6 +9,8 @@ FocusScope {
     id: panel
 
     property var host: null
+    // Across the top of Glimpse: how many are connected on the left, the list beside it.
+    readonly property bool wide: host !== null && host.compact
     readonly property var live: host ? host.topic("devices") : ({})
     readonly property var all: (live.state && live.state.items) || []
     readonly property string failure: (live.state && live.state.error) || ""
@@ -52,13 +54,28 @@ FocusScope {
         onAction: panel.host.open({})
     }
 
+    Column {
+        visible: panel.wide && panel.failure === ""
+        width: footer.width
+        spacing: 2
+        Label {
+            text: panel.all.filter(d => d.connected).length + " connected"
+            role: "title"
+        }
+        Label {
+            text: "of " + panel.all.length + " paired"
+            dim: true
+        }
+    }
+
     ListView {
         id: list
         visible: panel.failure === ""
+        x: panel.wide ? footer.width + 16 : 0
         anchors.top: parent.top
-        anchors.bottom: footer.top
-        anchors.bottomMargin: 6
-        width: parent.width
+        anchors.bottom: panel.wide ? parent.bottom : footer.top
+        anchors.bottomMargin: panel.wide ? 0 : 6
+        width: parent.width - x
         clip: true
         model: panel.shown
         delegate: Rectangle {
@@ -139,9 +156,10 @@ FocusScope {
     Item {
         id: footer
         anchors.bottom: parent.bottom
-        width: parent.width
+        width: panel.wide ? 200 : parent.width
         height: openSettings.height
         Label {
+            visible: !panel.wide
             anchors.verticalCenter: parent.verticalCenter
             text: panel.all.filter(d => d.connected).length + " of " + panel.all.length + " connected"
             role: "caption"
@@ -149,7 +167,7 @@ FocusScope {
         }
         Button {
             id: openSettings
-            anchors.right: parent.right
+            anchors.right: panel.wide ? undefined : parent.right
             text: "Open Devices"
             onClicked: panel.host.open({})
         }

@@ -343,8 +343,10 @@ mod tests {
 
     #[test]
     fn pinned_panels_are_checked() {
-        let mut c = Config::default();
-        c.pinned = vec![Pinned { app: "io.github.design_nexus.nyx.Music".into(), monitor: "eDP-2".into(), at: Some([40, 60]) }];
+        let mut c = Config {
+            pinned: vec![Pinned { app: "io.github.design_nexus.nyx.Music".into(), monitor: "eDP-2".into(), at: Some([40, 60]) }],
+            ..Config::default()
+        };
         validate(&c).unwrap();
         let toml = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&toml).unwrap().pinned, c.pinned);
