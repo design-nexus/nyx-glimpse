@@ -197,7 +197,9 @@ Scope {
         id: surface
         overlayId: "glimpse"
         category: "transient"
-        group: "launcher"
+        // The panels' group: opening Glimpse puts the Control Center, the Notification
+        // Center or the Switcher away, and they it, so only one holds the keyboard.
+        group: "panels"
         keyboard: "exclusive"
         // Asked for on purpose, it shows over a fullscreen window, as the GTK panel does.
         fullscreenRule: "show"
