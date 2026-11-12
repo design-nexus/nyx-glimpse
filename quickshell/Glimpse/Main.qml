@@ -55,9 +55,14 @@ Scope {
     // The command whose result is shown in place of the app's panel, until another
     // result is selected or Escape.
     property string ranId: ""
+    // The first word whose app card Escape put away; another first word brings cards back.
+    property string noCard: ""
 
     function hide() {
         backend.request("Hide", {}, null);
+    }
+    function firstWord(text) {
+        return text.trim().split(/\s+/)[0].toLowerCase();
     }
     function search(text) {
         generation += 1;
@@ -66,7 +71,15 @@ Scope {
         armed = "";
         message = "";
         ranId = "";
-        backend.request("Query", { text: text, generation: generation }, null);
+        if (noCard !== "" && firstWord(text) !== noCard)
+            noCard = "";
+        backend.request("Query", { text: text, generation: generation, card: noCard === "" }, null);
+    }
+    // Escape on an app's card: the search again without it.
+    function dismissCard() {
+        noCard = firstWord(panel.text);
+        if (noCard !== "")
+            search(panel.text);
     }
     // Pin the shown app panel (it stays after Glimpse closes), or unpin it.
     function togglePin(offer) {
@@ -260,6 +273,9 @@ Scope {
         }
         function type(text: string): void {
             panel.setText(text);
+        }
+        function esc(): void {
+            panel.pressEscape();
         }
         function enter(how: string): void {
             root.activate(root.selected, how || "enter");

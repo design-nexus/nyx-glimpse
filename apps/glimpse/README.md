@@ -24,6 +24,10 @@ Use arrows to select, Enter to activate, Ctrl+Enter to reveal a file’s folder,
 Escape to close. Ctrl+K opens searchable actions for the selected result; Escape
 returns to the same query and selection. Ctrl+Shift+F toggles a favorite. Both
 shortcuts can be changed in Settings. Up on an empty search opens saved query history.
+An app's name (`music`, `weather tokyo`) brings up its card above the results, and the
+list under it holds only the app and its commands while the words are one of its
+commands. Words that match no command (`music festival`) search everything under the
+card, which keeps using them. Escape puts the card away for that word; Escape again closes.
 Use Set alias in the action panel to assign or remove an alias. Applications expose
 New Window or Settings when supported by their desktop entries. Utility results copy to the clipboard. Reboot and shutdown require
 another activation. The panel’s folder button selects sources; indexing then starts

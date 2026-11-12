@@ -103,6 +103,19 @@ Item {
         return false;
     }
 
+    function pressEscape() {
+        if (glimpse.ranId !== "" && stacked) {
+            // A command's result gives the slot back to the app's panel.
+            glimpse.ranId = "";
+        } else if (stacked) {
+            // The card goes away and the words search everything.
+            appOffer = null;
+            glimpse.dismissCard();
+        } else {
+            glimpse.hide();
+        }
+    }
+
     function keyPressed(e) {
         const g = glimpse;
         const ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
@@ -115,11 +128,8 @@ Item {
                 g.activate(g.selected, "favorite");
         } else if (e.key === Qt.Key_Up && input.text === "") {
             actions.openHistory();
-        } else if (e.key === Qt.Key_Escape && g.ranId !== "" && stacked) {
-            // A command's result gives the slot back to the app's panel.
-            g.ranId = "";
         } else if (e.key === Qt.Key_Escape) {
-            g.hide();
+            pressEscape();
         } else if (e.key === Qt.Key_Down || e.key === Qt.Key_Up || e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) {
             const step = ({ [Qt.Key_Down]: 1, [Qt.Key_Up]: -1, [Qt.Key_PageDown]: 8, [Qt.Key_PageUp]: -8 })[e.key];
             g.select(g.selected + step);
@@ -331,7 +341,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 12
                 Repeater {
-                    model: panel.glimpse.row ? panel.glimpse.row.hints : []
+                    model: (panel.glimpse.row ? panel.glimpse.row.hints : []).concat(panel.stacked && panel.glimpse.ranId === "" ? [{ keys: ["Esc"], label: "Search everything" }] : [])
                     delegate: Row {
                         required property var modelData
                         spacing: 6

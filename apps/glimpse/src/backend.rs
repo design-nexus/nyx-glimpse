@@ -6,7 +6,8 @@
 //! - `panel`: `{open, serial, keep, query}`, whether the panel shows; `keep` reopens it
 //!   with the search it had, `query` fills the search;
 //! - `results`: `{generation, query, rows, status, complete, calc}` for the latest query,
-//!   sorted into the GTK panel's categories; never an older query's over a newer one;
+//!   sorted into the GTK panel's categories (with an app's card up, its row and its
+//!   commands alone while the words are a command); never an older query's over a newer one;
 //! - `config`: `{preview, action_key, favorite_key}`;
 //! - `plugins`: the installed plugins, the catalog and the plugin window's note;
 //! - `manager`: `{open, serial}`, whether the plugin window shows;
@@ -17,7 +18,8 @@
 //!
 //! Events: `message {text}` for the status line, `rerun {}` to search again.
 //!
-//! Operations: `Query`, `Activate {id, generation, how, confirmed}` (replies `{done}`,
+//! Operations: `Query {text, generation, card?}` (`card: false` once Escape put the app's
+//! card away: no card for that search), `Activate {id, generation, how, confirmed}` (replies `{done}`,
 //! `{ask}`, `{message}`, `{message, rerun}`, `{fill}` for a command that needs more
 //! words, or `{message, preview}` when a command's result is in its preview),
 //! `Preview`, `Actions`, `ContextActions`,
@@ -172,10 +174,7 @@ impl Row {
                 Item::Command(c) => c.fill.as_str(),
                 _ => "",
             },
-            "panel": match &self.item {
-                Item::Panel(o) => offer_json(o),
-                _ => self.panel.as_ref().map(offer_json).unwrap_or(Value::Null),
-            },
+            "panel": offer_of(self).map(offer_json).unwrap_or(Value::Null),
         })
     }
 }
@@ -254,6 +253,41 @@ fn fold_panels(rows: &mut Vec<Row>) {
         rows[i_now] = row;
         i = i_now + 1;
     }
+}
+
+/// The panel a row offers: its own (a panel row) or its app's.
+fn offer_of(row: &Row) -> Option<&PanelOffer> {
+    match &row.item {
+        Item::Panel(o) => Some(o),
+        _ => row.panel.as_ref(),
+    }
+}
+
+/// The rows in the order shown. With an app's card up, the list under it is the app's
+/// row and its commands while the words after the name are one of its commands (or
+/// there are none); words that match no command get the whole search, the card staying
+/// on top to use them. `card: false` (Escape on the card): no card at all.
+fn arrange(mut rows: Vec<Row>, card: bool) -> Vec<Row> {
+    fold_panels(&mut rows);
+    if !card {
+        rows.retain(|r| !matches!(r.item, Item::Panel(_)));
+        for r in &mut rows {
+            r.panel = None;
+        }
+    }
+    if let Some(at) = rows.iter().position(|r| offer_of(r).is_some_and(|o| o.available)) {
+        let offer = offer_of(&rows[at]).cloned().unwrap();
+        let mine = |r: &Row| matches!(&r.item, Item::Command(c) if c.app_id == offer.app_id);
+        if offer.query.is_empty() || rows.iter().any(mine) {
+            let head = rows.remove(at);
+            let (mut commands, rest): (Vec<Row>, Vec<Row>) = rows.into_iter().partition(mine);
+            commands.sort_by_key(|r| !matches!(&r.item, Item::Command(c) if c.explicit));
+            let ask = rest.into_iter().filter(|r| matches!(r.item, Item::Ask(_)));
+            return std::iter::once(head).chain(commands).chain(ask).collect();
+        }
+    }
+    rows.sort_by_key(|r| r.category().0);
+    rows
 }
 
 /// A query's command rows and, first, the app's panel; when the words start with an
@@ -1097,6 +1131,8 @@ struct Shared {
     paths: Paths,
     link: Mutex<Option<Arc<nyx_ui_link::Link>>>,
     generation: AtomicU64,
+    /// Whether the search on show may offer an app's card.
+    card: AtomicBool,
     rows: Mutex<Shown>,
     panel: Mutex<(bool, u64)>,
     manager: Mutex<(bool, u64)>,
@@ -1384,6 +1420,7 @@ pub fn serve(p: Paths) -> Result<()> {
         paths: p.clone(),
         link: Mutex::new(None),
         generation: AtomicU64::new(0),
+        card: AtomicBool::new(true),
         rows: Mutex::default(),
         panel: Mutex::new((false, 0)),
         manager: Mutex::new((false, 0)),
@@ -1437,6 +1474,7 @@ pub fn serve(p: Paths) -> Result<()> {
                 }
                 "Query" => {
                     let text = b["text"].as_str().unwrap_or("").to_string();
+                    shared.card.store(b["card"].as_bool().unwrap_or(true), Ordering::SeqCst);
                     shared.generation.store(generation, Ordering::SeqCst);
                     shared.ran.lock().unwrap().clear();
                     let _ = shared.jobs.lock().unwrap().send((generation, text));
@@ -1779,9 +1817,7 @@ fn publish_results(shared: &Shared, link: &nyx_ui_link::Link, p: &Paths, g: u64,
         return;
     }
     let c = p.load().unwrap_or_default();
-    let mut sorted = found.to_vec();
-    fold_panels(&mut sorted);
-    sorted.sort_by_key(|r| r.category().0);
+    let sorted = arrange(found.to_vec(), shared.card.load(Ordering::SeqCst));
     let rows: Vec<Value> = sorted.iter().map(|r| r.json(&c.favorites)).collect();
     *shared.rows.lock().unwrap() = (g, q.to_string(), sorted.into_iter().map(|r| (r.id.clone(), r)).collect());
     link.publish(
@@ -1914,9 +1950,8 @@ mod tests {
         assert!(!glimpse_peer(&peer(None)));
     }
 
-    #[test]
-    fn an_app_s_panel_goes_on_the_app_s_own_row() {
-        let offer = |app_id: &str, name: &str| PanelOffer {
+    fn offer(app_id: &str, name: &str) -> PanelOffer {
+        PanelOffer {
             app: name.into(),
             app_id: app_id.into(),
             icon: app_id.into(),
@@ -1926,8 +1961,11 @@ mod tests {
             size: Value::Null,
             available: true,
             reason: None,
-        };
-        let app = |id: &str, title: &str| Row {
+        }
+    }
+
+    fn app(id: &str, title: &str) -> Row {
+        Row {
             id: format!("app:{id}.desktop"),
             title: title.into(),
             subtitle: String::new(),
@@ -1936,7 +1974,71 @@ mod tests {
             icon: id.into(),
             panel: None,
             item: Item::Provider(Target::App(format!("{id}.desktop"))),
+        }
+    }
+
+    fn command(app_id: &str, action: &str, explicit: bool) -> Row {
+        command_row(AppCommand {
+            app: String::new(),
+            app_id: app_id.into(),
+            icon: String::new(),
+            action: action.into(),
+            title: action.into(),
+            description: String::new(),
+            arguments: Default::default(),
+            missing: vec![],
+            usage: String::new(),
+            risk: nyx_actions::Risk::ReadOnly,
+            asks: false,
+            available: true,
+            reason: None,
+            fill: String::new(),
+            explicit,
+            result: None,
+        })
+    }
+
+    #[test]
+    fn an_app_s_card_lists_its_commands_while_the_words_are_one() {
+        let music = "io.github.design_nexus.nyx.Music";
+        let found = |words: &str, commands: Vec<Row>| {
+            let mut rows = vec![
+                panel_row(PanelOffer { query: words.into(), ..offer(music, "Music") }),
+                app("io.github.design_nexus.nyx.Lyra", "Lyra"),
+                file_row(PathBuf::from("/tmp/music festival.txt"), &Value::Null),
+                app(music, "Music"),
+            ];
+            rows.extend(commands);
+            rows
         };
+        let ids = |rows: &[Row]| rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+
+        // The name alone: the app's row, then its commands, typed ones first; nothing else.
+        let (play, pause) = (command(music, "music.play", false), command(music, "music.pause", true));
+        let notes = command("io.github.design_nexus.nyx.Notes", "notes.create", false);
+        let named = arrange(found("", vec![play, notes, pause]), true);
+        assert_eq!(ids(&named), [format!("app:{music}.desktop"), "action:music.pause".into(), "action:music.play".into()]);
+        assert!(named[0].panel.is_some());
+
+        // A command's words: the same.
+        let typed = arrange(found("play", vec![command(music, "music.play", true)]), true);
+        assert_eq!(ids(&typed), [format!("app:{music}.desktop"), "action:music.play".to_string()]);
+
+        // Words that match no command: the whole search, the card still on the app's row.
+        let other = arrange(found("festival", vec![]), true);
+        assert_eq!(other.len(), 3, "{other:?}");
+        assert!(other.iter().any(|r| r.kind == "file"));
+        assert!(other.iter().find(|r| r.title == "Music").unwrap().panel.is_some());
+
+        // Escape put the card away: no card, and the commands sort as any search's.
+        let away = arrange(found("", vec![command(music, "music.play", false)]), false);
+        assert!(away.iter().all(|r| offer_of(r).is_none()), "{away:?}");
+        assert_eq!(away.len(), 4);
+        assert_eq!(away.last().unwrap().kind, "command");
+    }
+
+    #[test]
+    fn an_app_s_panel_goes_on_the_app_s_own_row() {
         let weather = "io.github.design_nexus.nyx.Weather";
         let mut rows = vec![
             panel_row(offer(weather, "Weather")),
