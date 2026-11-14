@@ -1,4 +1,4 @@
-// Nyx Settings' extension protocol (nyx-settings apps/settings/src/ext/protocol.rs, 6b8b3ea): Glimpse's settings page must deserialize as Settings reads it.
+// Nyx Settings' extension protocol (nyx-settings apps/settings/src/ext/protocol.rs, 6b8b3ea plus the preview pane): Glimpse's settings page must deserialize as Settings reads it.
 //! What extensions print. Everything is JSON on stdout:
 //!
 //! - `<exec> pages` → `[PageInfo]` (empty: no matching hardware)
@@ -39,6 +39,84 @@ pub struct PageDesc {
     /// Ask again every this many seconds while the page is showing (live values).
     pub poll: u32,
     pub groups: Vec<GroupDesc>,
+    /// A picture of the device or app beside the groups; the groups move to a column
+    /// on the left.
+    pub preview: Option<PreviewDesc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct PreviewDesc {
+    pub title: String,
+    pub line: String,
+    pub blocks: Vec<Block>,
+    /// A short note at the foot of the pane, with an icon.
+    pub foot: String,
+    pub foot_icon: String,
+}
+
+/// A part of the preview pane.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Block {
+    pub kind: BlockKind,
+    /// device, picture: what to draw (laptop, keyboard, mouse, headset, monitor, gpu,
+    /// gamepad, tablet, memory), and its lit colour (`#rrggbb`).
+    pub picture: String,
+    pub accent: String,
+    pub title: String,
+    pub line: String,
+    /// device and stats: readings; facts: label and value; list: icon, label, sub
+    /// and value at the end.
+    pub items: Vec<Item>,
+    /// banner, caption.
+    pub text: String,
+    pub warning: bool,
+    /// rows: rows drawn in the pane (a curve, a colour, a camera).
+    pub rows: Vec<Row>,
+    /// deck: keys `columns` across; a click sends `set PAGE KEY INDEX`.
+    pub key: String,
+    pub columns: u32,
+    pub keys: Vec<DeckKey>,
+    pub selected: Option<u32>,
+    /// deck: lines on its screen, beside the keys.
+    pub screen: Vec<String>,
+    pub dials: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlockKind {
+    Device,
+    Picture,
+    #[default]
+    Stats,
+    Facts,
+    List,
+    Banner,
+    Caption,
+    Rows,
+    Deck,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Item {
+    pub label: String,
+    pub value: String,
+    pub sub: String,
+    pub icon: String,
+    /// good, warn, bad or accent: the value's colour.
+    pub tone: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct DeckKey {
+    pub icon: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -66,6 +144,8 @@ pub struct Row {
     pub title: String,
     pub desc: String,
     pub keywords: String,
+    /// An icon on a tile before the title.
+    pub icon: String,
     /// A small pill after the title, e.g. "Restart needed".
     pub tag: String,
     pub tooltip: String,
@@ -148,7 +228,7 @@ pub enum Kind {
 }
 
 /// Every kind this Settings can draw, passed to helpers as `SETTINGS_KINDS`.
-pub const KINDS: &str = "info switch slider choice segmented buttons entry button colour chips curve disclosure camera meter";
+pub const KINDS: &str = "info switch slider choice segmented buttons entry button colour chips curve disclosure camera meter preview icon";
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ThemeSwatch {
@@ -279,6 +359,26 @@ mod tests {
         for k in ["camera", "meter", "curve", "info"] {
             assert!(KINDS.split(' ').any(|x| x == k));
         }
+    }
+
+    #[test]
+    fn describes_a_preview() {
+        let d = parse_page(
+            r##"{"groups":[],"preview":{"title":"G16","blocks":[
+                {"kind":"device","picture":"laptop","items":[{"label":"Battery","value":"78%","tone":"good"}]},
+                {"kind":"rows","rows":[{"kind":"switch","key":"x"}]},
+                {"kind":"deck","key":"pick","columns":3,"keys":[{"icon":"a","label":"A"},{}],"selected":1},
+                {"kind":"hologram"}
+            ]}}"##,
+        )
+        .unwrap();
+        let p = d.preview.unwrap();
+        assert_eq!(p.blocks[0].kind, BlockKind::Device);
+        assert_eq!(p.blocks[0].items[0].tone, "good");
+        assert_eq!(p.blocks[1].rows[0].kind, Kind::Switch);
+        assert_eq!((p.blocks[2].columns, p.blocks[2].selected, p.blocks[2].keys.len()), (3, Some(1), 2));
+        assert_eq!(p.blocks[3].kind, BlockKind::Unknown);
+        assert!(parse_page(r#"{"groups":[]}"#).unwrap().preview.is_none());
     }
 
     #[test]

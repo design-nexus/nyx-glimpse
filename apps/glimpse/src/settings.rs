@@ -1,14 +1,24 @@
 use crate::{
-    config::{self, Paths},
+    config::{self, Config, Paths},
     integration,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     fs,
+    path::Path,
     process::{Command, Stdio},
 };
 const PAGE: &str = "glimpse";
+fn preview_supported() -> bool {
+    std::env::var("SETTINGS_KINDS").is_ok_and(|k| k.split(' ').any(|x| x == "preview"))
+}
+fn tilde(path: &Path) -> String {
+    std::env::var_os("HOME")
+        .and_then(|home| path.strip_prefix(home).ok().map(|rest| format!("~/{}", rest.display())))
+        .unwrap_or_else(|| path.display().to_string())
+}
 fn button(key: &str, title: &str, label: &str, confirm: &str) -> Value {
     json!({"kind":"button","key":key,"title":title,"label":label,"confirm":confirm,"refresh":true})
 }
@@ -31,6 +41,10 @@ fn service_enabled() -> bool {
     Command::new("systemctl").args(["--user", "is-enabled", "nyx-glimpsed.service"]).output().is_ok_and(|o| o.status.success())
 }
 pub fn describe(p: &Paths, page: &str) -> Result<Value> {
+    describe_page(p, page, preview_supported())
+}
+/// `style_a`: Settings draws row icons and the preview pane, so the page has both.
+pub fn describe_page(p: &Paths, page: &str, style_a: bool) -> Result<Value> {
     // Accept old IDs for an already-open Settings page during an upgrade, but advertise only one page.
     if page != PAGE && !page.starts_with("glimpse-") {
         bail!("unknown Settings page");
@@ -41,14 +55,9 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
     let theme_options: Vec<_> = nyx_theme::all().into_iter().map(|t| (t.id, t.name)).collect();
     let service_enabled = service_enabled();
     let mut sources = vec![button("add-folder", "Search folders", "Add folder", "")];
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     for root in &c.roots {
         let full = root.display().to_string();
-        let display = home
-            .as_ref()
-            .and_then(|home| root.strip_prefix(home).ok())
-            .map(|path| format!("~/{}", path.display()))
-            .unwrap_or_else(|| full.clone());
+        let display = tilde(root);
         let title = root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| full.clone());
         sources.push(json!({"kind":"disclosure","key":format!("folder/{full}"),"title":title,"desc":display,"keywords":full,"rows":[
             switch(&format!("code-root/{full}"), "Semantic code search", c.code_roots.contains(root)),
@@ -121,7 +130,164 @@ pub fn describe(p: &Paths, page: &str) -> Result<Value> {
         }
     }
     groups[2]["note"] = format!("{} folders · {} exclusions", c.roots.len(), c.excluded.len()).into();
-    Ok(json!({"poll":2,"groups":groups}))
+    if !style_a {
+        return Ok(json!({"poll":2,"groups":groups}));
+    }
+    let plugins = crate::plugins::list(p).unwrap_or_default();
+    let on: Vec<&str> = plugins.iter().filter(|x| x.grant.enabled).map(|x| x.manifest.name.as_str()).collect();
+    for row in groups.iter_mut().filter_map(|g| g.get_mut("rows").and_then(Value::as_array_mut)).flatten() {
+        style_row(row, omarchy, on.len());
+    }
+    groups[3]["note"] = "EmbeddingGemma 2 in Nyx AI Core searches file contents and media by meaning, on this computer. If Glimpse doesn't already have the model, AI Core downloads it once (about 865 MB). Word matches in contents work without it.".into();
+    let preview = preview(p, &c, shortcuts_enabled(p), &on, plugins.len());
+    Ok(json!({"poll":2,"groups":groups,"preview":preview}))
+}
+/// The row's icon and a description short enough for one line beside its control.
+fn style_row(row: &mut Value, omarchy: bool, plugins_on: usize) {
+    for inner in row.get_mut("rows").and_then(Value::as_array_mut).into_iter().flatten() {
+        style_row(inner, omarchy, plugins_on);
+    }
+    let key = row["key"].as_str().unwrap_or_default().to_owned();
+    let s = |text: &str| Some(text.to_owned());
+    let (icon, desc) = match key.as_str() {
+        "preview" => ("view-reveal-symbolic", s("A preview beside the selected result")),
+        "learning" => {
+            row["title"] = "Learn from what you pick".into();
+            ("view-sort-descending-symbolic", s("Ranks what you open often higher"))
+        }
+        "clear-learning" => ("document-open-recent-symbolic", s("Favorites and aliases are kept")),
+        "paused" => ("media-playback-pause-symbolic", s("Folders aren't scanned while paused")),
+        "service" => ("system-shutdown-symbolic", s("Runs the indexer when you sign in")),
+        "shortcuts" => {
+            ("input-keyboard-symbolic", s(if omarchy { "Instead of Omarchy's launcher" } else { "Use the shortcuts below" }))
+        }
+        "search_key" => ("system-search-symbolic", s("Opens Glimpse")),
+        "menu_key" => ("open-menu-symbolic", s("Opens Omarchy's menu")),
+        "action_key" => ("input-keyboard-symbolic", s("Actions for the selected result")),
+        "favorite_key" => ("starred-symbolic", s("Favorites rank above other matches")),
+        "add-folder" => ("folder-new-symbolic", s("Index another folder")),
+        k if k.starts_with("folder/") => {
+            let path = row["desc"].as_str().unwrap_or_default();
+            let code = row["rows"][0]["value"] == true;
+            ("folder-symbolic", Some(if code { format!("{path} · code search on") } else { path.to_owned() }))
+        }
+        k if k.starts_with("code-root/") => ("utilities-terminal-symbolic", s("Search code here by meaning")),
+        k if k.starts_with("remove-root/") => ("user-trash-symbolic", s("Deletes what was indexed from it")),
+        "exclusions" => ("view-conceal-symbolic", row["desc"].as_str().map(String::from)),
+        "exclude" => ("list-add-symbolic", s("Skip a folder inside a source")),
+        k if k.starts_with("remove-exclude/") => ("folder-symbolic", s("Not indexed")),
+        "semantic" => {
+            row["title"] = "Search by meaning".into();
+            ("find-location-symbolic", s("Local AI, on this computer"))
+        }
+        "ai-status" => ("dialog-information-symbolic", None),
+        "ai-retry" => ("view-refresh-symbolic", s("Try the setup again")),
+        "plugins" => ("application-x-addon-symbolic", Some(format!("{plugins_on} turned on"))),
+        "follow_omarchy" => ("preferences-desktop-appearance-symbolic", s("Use Omarchy's theme")),
+        "theme" => ("color-select-symbolic", s(if omarchy { "While not following Omarchy" } else { "Shared by every Nyx app" })),
+        "" => ("folder-symbolic", None),
+        _ => ("emblem-system-symbolic", None),
+    };
+    row["icon"] = icon.into();
+    if let Some(desc) = desc {
+        row["desc"] = desc.into();
+    }
+}
+fn files(n: i64) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    format!("{grouped} {}", if n == 1 { "file" } else { "files" })
+}
+fn preview(p: &Paths, c: &Config, shortcuts: bool, plugins_on: &[&str], installed: usize) -> Value {
+    let counts: Option<HashMap<String, i64>> = crate::index::open(p).ok().and_then(|conn| {
+        let mut query = conn.prepare("SELECT root, count(*) FROM files GROUP BY root").ok()?;
+        let counts = query.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<rusqlite::Result<_>>().ok();
+        counts
+    });
+    let in_root = |root: &Path| counts.as_ref().map(|m| m.get(&*root.to_string_lossy()).copied().unwrap_or(0));
+    // The daemon's last scan lists the folders it couldn't read.
+    let unavailable: Vec<String> = fs::read(p.state.join("index-status.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["unavailable"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()))
+        .unwrap_or_default();
+    let mut stats = Vec::new();
+    if counts.is_some() {
+        let total = c.roots.iter().filter_map(|r| in_root(r)).sum();
+        let folders = format!("{} folder{}", c.roots.len(), if c.roots.len() == 1 { "" } else { "s" });
+        stats.push(json!({"label":"Indexed","value":files(total),"sub":if c.paused { format!("{folders} · paused") } else { folders },"tone":if c.paused { "warn" } else { "" }}));
+    }
+    let status = crate::ai_setup::status(p);
+    let (ai, sub, tone) = match status.split_once(" · ") {
+        _ if status == "Disabled" => ("Off", "Word matches only".to_owned(), ""),
+        Some(("Ready", rest)) => {
+            let mut rest = rest.chars();
+            ("Ready", rest.next().map(|f| f.to_uppercase().chain(rest).collect()).unwrap_or_default(), "good")
+        }
+        _ if crate::ai_setup::failed(p) => ("Failed", "Retry under Local AI".to_owned(), "bad"),
+        _ => ("Setting up", status.clone(), "accent"),
+    };
+    stats.push(json!({"label":"Local AI","value":ai,"sub":sub,"tone":tone}));
+    let names = match plugins_on {
+        [] => format!("{installed} installed"),
+        [a] => (*a).to_owned(),
+        [a, b] => format!("{a}, {b}"),
+        [a, b, ..] => format!("{a}, {b}, …"),
+    };
+    stats.push(json!({"label":"Plugins","value":format!("{} on", plugins_on.len()),"sub":names}));
+    let mut blocks = vec![json!({"kind":"stats","items":stats})];
+    if c.roots.is_empty() {
+        blocks.push(json!({"kind":"caption","text":"No folders are indexed. Applications and utilities work without them."}));
+    } else {
+        const SHOWN: usize = 6;
+        let items: Vec<Value> = c
+            .roots
+            .iter()
+            .take(SHOWN)
+            .map(|root| {
+                let name =
+                    root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
+                let mut sub = tilde(root);
+                if c.code_roots.contains(root) {
+                    sub.push_str(" · code search");
+                }
+                let missing = unavailable.iter().any(|u| u.starts_with(&format!("{}: ", root.display())));
+                let (value, tone) =
+                    if missing { ("Unavailable".to_owned(), "bad") } else { (in_root(root).map(files).unwrap_or_default(), "") };
+                json!({"icon":"folder-symbolic","label":name,"sub":sub,"value":value,"tone":tone})
+            })
+            .collect();
+        blocks.push(json!({"kind":"list","title":"Indexed folders","items":items}));
+        if let Some(more) = c.roots.len().checked_sub(SHOWN).filter(|&n| n > 0) {
+            let s = if more == 1 { "" } else { "s" };
+            blocks.push(json!({"kind":"caption","text":format!("{more} more folder{s} under Sources.")}));
+        }
+    }
+    let keys: Vec<String> = c
+        .search_key
+        .split('+')
+        .map(|k| {
+            let mut k = k.trim().chars();
+            k.next().map(|f| f.to_uppercase().chain(k.flat_map(char::to_lowercase)).collect()).unwrap_or_default()
+        })
+        .collect();
+    let title = if shortcuts { format!("What {} opens", keys.join(" ")) } else { "What Glimpse searches".to_owned() };
+    let line = format!(
+        "Apps, files, commands, quick answers and plugins{}",
+        if c.learning { "; it learns what you pick." } else { "." }
+    );
+    let foot = if c.battery_pause {
+        format!("Indexing pauses on battery power and when a temperature sensor reaches {} °C.", c.thermal_limit)
+    } else {
+        format!("Indexing pauses when a temperature sensor reaches {} °C.", c.thermal_limit)
+    };
+    json!({"title":title,"line":line,"blocks":blocks,"foot":foot,"foot_icon":"dialog-information-symbolic"})
 }
 fn launch(args: &[&str]) -> Result<()> {
     Command::new(std::env::current_exe()?.with_file_name("nyx-glimpse"))

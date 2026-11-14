@@ -192,7 +192,8 @@ fn integration_preserves_edits_and_rejects_tampering() {
 #[test]
 fn settings_pages_parse_in_both_real_hosts() {
     let (_t, p, _) = fixture();
-    let value = nyx_glimpse::settings::describe(&p, "glimpse").unwrap();
+    let value = nyx_glimpse::settings::describe_page(&p, "glimpse", false).unwrap();
+    assert!(value.get("preview").is_none());
     let titles: Vec<_> = value["groups"].as_array().unwrap().iter().map(|g| g["title"].as_str().unwrap()).collect();
     assert_eq!(titles, ["General", "Shortcuts", "Sources", "Local AI", "Plugins", "Appearance"]);
     // Only long groups collapse; short ones stay open.
@@ -208,6 +209,39 @@ fn settings_pages_parse_in_both_real_hosts() {
         }
     }
     let _: current_host::PageDesc = serde_json::from_value(value).unwrap();
+}
+#[test]
+fn settings_page_with_preview_pane() {
+    let (_t, p, c) = fixture();
+    fs::write(c.roots[0].join("a.txt"), "a").unwrap();
+    index::scan(&p, &c).unwrap();
+    let value = nyx_glimpse::settings::describe_page(&p, "glimpse", true).unwrap();
+    let plain = nyx_glimpse::settings::describe_page(&p, "glimpse", false).unwrap();
+    let titles = |v: &serde_json::Value| v["groups"].as_array().unwrap().iter().map(|g| g["title"].clone()).collect::<Vec<_>>();
+    assert_eq!(titles(&value), titles(&plain));
+    fn all_rows(rows: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+        for row in rows.as_array().into_iter().flatten() {
+            out.push(row.clone());
+            all_rows(&row["rows"], out);
+        }
+    }
+    let mut rows = Vec::new();
+    for group in value["groups"].as_array().unwrap() {
+        all_rows(&group["rows"], &mut rows);
+    }
+    for row in &rows {
+        assert!(row["icon"].as_str().is_some_and(|i| i.ends_with("-symbolic")), "{row}");
+        assert!(row["kind"] == "info" || !row["desc"].as_str().unwrap_or("").is_empty(), "{row}");
+    }
+    let pane = &value["preview"];
+    assert_eq!(pane["blocks"][0]["kind"], "stats");
+    let labels: Vec<_> = pane["blocks"][0]["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Indexed", "Local AI", "Plugins"]);
+    assert_eq!(pane["blocks"][0]["items"][0]["value"], "1 file");
+    assert_eq!(pane["blocks"][1]["items"][0]["value"], "1 file");
+    assert!(pane["foot"].as_str().unwrap().contains("battery"));
+    let page: current_host::PageDesc = serde_json::from_value(value).unwrap();
+    assert!(page.preview.is_some_and(|p| p.blocks.iter().all(|b| b.kind != current_host::BlockKind::Unknown)));
 }
 #[test]
 fn subprocess_limits_and_failures() {
