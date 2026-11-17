@@ -9,12 +9,12 @@ repository.workspace = true
 
 [dependencies]
 glimpse-plugin-sdk = { path = "../../crates/glimpse-plugin-sdk" }
-nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68" }
-nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8839d237a23ec83887429475f0780c06a36826" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8839d237a23ec83887429475f0780c06a36826" }
-nyx-ui-link = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68" }
-nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68" }
-nyx-ai-client = { git = "https://github.com/design-nexus/nyx-ai.git", rev = "9633690eee06724145be430db439244ba131825f" }
+nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411" }
+nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "914b14ec5574ca04cbb985b571cfbfb0a42aae15" }
+nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "914b14ec5574ca04cbb985b571cfbfb0a42aae15" }
+nyx-ui-link = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411" }
+nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411" }
+nyx-ai-client = { git = "https://github.com/design-nexus/nyx-ai.git", rev = "277b9a5b11fead7850bc8ce68ddc57f08c09f983" }
 nyx-passwords-proto = { git = "https://github.com/design-nexus/nyx-passwords.git", rev = "271eac96e166f1adceecc3e3c6c0dfde027ca522", features = ["client"] }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }
 gtk4-layer-shell = "0.8"
