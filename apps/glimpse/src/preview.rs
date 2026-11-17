@@ -41,7 +41,9 @@ pub fn plugin_preview(id: &str, result_id: &str, title: &str, subtitle: &str, qu
     }
     let text = plugin
         .filter(|plugin| plugin.manifest.capabilities.contains(&"preview".into()))
-        .and_then(|_| plugins::call(&p, id, "preview", "preview", json!({"result_id": result_id, "title": title, "query": query})).ok())
+        .and_then(|_| {
+            plugins::call(&p, id, "preview", "preview", json!({"result_id": result_id, "title": title, "query": query})).ok()
+        })
         .and_then(|v| v["text"].as_str().map(|s| s.chars().take(16000).collect::<String>()));
     let body = match text {
         Some(t) => {
@@ -75,7 +77,10 @@ pub fn file_preview(path: &Path, hit: &Value, query: &str, flavor: Flavor, inlin
 
 /// The match's line, page or moment from a content hit, in that order.
 pub fn hit_line(hit: &Value) -> Option<u64> {
-    hit["info"]["line"].as_u64().or_else(|| hit["focus"].as_u64()).or_else(|| hit["loc"].as_f64().filter(|_| hit["segment"] == "lines").map(|n| n as u64))
+    hit["info"]["line"]
+        .as_u64()
+        .or_else(|| hit["focus"].as_u64())
+        .or_else(|| hit["loc"].as_f64().filter(|_| hit["segment"] == "lines").map(|n| n as u64))
 }
 
 /// A file's folder for display, with the home folder as "~".
@@ -196,7 +201,14 @@ pub fn capture_image(cmd: Command) -> Option<Vec<u8>> {
 
 /// `inline_media`: the panel plays audio and video itself (`Body::Media`); otherwise a
 /// video shows a still.
-pub fn file_body(path: &Path, hit: &Value, query: &str, details: &mut Vec<(String, String)>, flavor: Flavor, inline_media: bool) -> Body {
+pub fn file_body(
+    path: &Path,
+    hit: &Value,
+    query: &str,
+    details: &mut Vec<(String, String)>,
+    flavor: Flavor,
+    inline_media: bool,
+) -> Body {
     let ext = path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
     if let Some(is_video) = media_kind(path) {
         if let Some(seconds) = media_length(path) {
@@ -634,7 +646,6 @@ pub fn code_markup(code: &str, path: &Path, flavor: Flavor) -> Option<String> {
     }
     Some(markup)
 }
-
 
 #[cfg(test)]
 mod tests {

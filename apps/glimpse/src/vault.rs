@@ -2,8 +2,8 @@
 //! Rows carry an item's id and metadata, never a secret; copies happen in the daemon,
 //! which owns the clipboard (and clears it), so Glimpse can close at once.
 
-use gtk::{gio, glib::prelude::*};
 use crate::passwords::{Query, Special, Verb};
+use gtk::{gio, glib::prelude::*};
 use nyx_passwords_proto::{Error as Code, client, state};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,7 +229,9 @@ pub async fn perform(pw: &Pw, verb: Option<Verb>) -> Result<Ran, String> {
         // Anything but a cancel goes on in Passwords' own unlock page.
         Pw::FaceUnlock => match client::call("UnlockWithFace", None).await {
             Ok(_) => Ok(Ran::Unlocked),
-            Err(e) if e.to_string().contains("not confirmed") => Err("Not confirmed. Enter to try again, or unlock in Passwords".to_string()),
+            Err(e) if e.to_string().contains("not confirmed") => {
+                Err("Not confirmed. Enter to try again, or unlock in Passwords".to_string())
+            }
             Err(_) => open_passwords(&["--unlock"]),
         },
         Pw::Unlock | Pw::SignIn => open_passwords(&["--unlock"]),
@@ -239,7 +241,11 @@ pub async fn perform(pw: &Pw, verb: Option<Verb>) -> Result<Ran, String> {
 }
 
 fn open_passwords(args: &[&str]) -> Result<Ran, String> {
-    std::process::Command::new("nyx-passwords").args(args).spawn().map(|_| Ran::Done).map_err(|_| "Couldn't open Passwords".to_string())
+    std::process::Command::new("nyx-passwords")
+        .args(args)
+        .spawn()
+        .map(|_| Ran::Done)
+        .map_err(|_| "Couldn't open Passwords".to_string())
 }
 
 fn message(e: client::Fail) -> String {

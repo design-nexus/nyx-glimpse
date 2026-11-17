@@ -99,13 +99,18 @@ impl Core {
         let folder = p.data.join("Models");
         let mut models = self.run(self.client.list_models(), &|| false, Duration::from_secs(15))?;
         if pick(&models, &folder).is_none() && [MODEL_FILE, PROJECTOR_FILE].iter().all(|f| folder.join(f).is_file()) {
-            if let Err(e) = self.run(self.client.add_model_dirs(vec![folder.display().to_string()]), &|| false, Duration::from_secs(60)) {
+            if let Err(e) =
+                self.run(self.client.add_model_dirs(vec![folder.display().to_string()]), &|| false, Duration::from_secs(60))
+            {
                 eprintln!("Glimpse: Nyx AI Core didn't take Glimpse's model folder: {e}");
             }
             models = self.run(self.client.list_models(), &|| false, Duration::from_secs(15))?;
         }
         let id = pick(&models, &folder).ok_or_else(|| {
-            proto::Error::new(ErrorKind::UnknownModel, "EmbeddingGemma 2 isn't in Nyx AI Core yet; turn on local AI in Glimpse Settings")
+            proto::Error::new(
+                ErrorKind::UnknownModel,
+                "EmbeddingGemma 2 isn't in Nyx AI Core yet; turn on local AI in Glimpse Settings",
+            )
         })?;
         self.apply_settings(&id, &|| false);
         self.model = Some(id.clone());
@@ -219,7 +224,11 @@ impl Core {
 
     /// Offer `actions` through AI Core and answer their calls with `handle` until
     /// AI Core ends the offer or the connection drops.
-    pub fn serve(&self, actions: Vec<proto::ActionSpec>, handle: &dyn Fn(&str, &Value) -> std::result::Result<Value, String>) -> Result<()> {
+    pub fn serve(
+        &self,
+        actions: Vec<proto::ActionSpec>,
+        handle: &dyn Fn(&str, &Value) -> std::result::Result<Value, String>,
+    ) -> Result<()> {
         self.rt.block_on(async {
             let mut server = self.client.serve_actions(actions).await?;
             while let Some(call) = server.next().await {
@@ -278,8 +287,10 @@ pub fn compatible(stored: &str, current: &str) -> bool {
 }
 
 pub fn legacy_equivalent() -> String {
-    let settings: BTreeMap<String, String> =
-        [("image-max-tokens", "280"), ("image-min-tokens", "140"), ("pooling", "mean")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let settings: BTreeMap<String, String> = [("image-max-tokens", "280"), ("image-min-tokens", "140"), ("pooling", "mean")]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     identity_key(&ModelIdentity {
         id: String::new(),
         file: MODEL_FILE.into(),
@@ -411,8 +422,8 @@ pub fn status(p: &Paths) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::fake::{fake_core, identity, model};
+    use super::*;
 
     #[test]
     fn picks_glimpse_s_own_copy_first() {
@@ -529,15 +540,25 @@ pub(crate) mod fake {
                         let mut lines = BufReader::new(read).lines();
                         while let Ok(Some(line)) = lines.next_line().await {
                             let reply = match serde_json::from_str::<ClientLine>(&line).unwrap() {
-                                ClientLine::Hello(_) => ServerLine::Hello(Welcome { api_version: proto::API_VERSION, server: "t".into(), client: "nyx-glimpse".into() }),
+                                ClientLine::Hello(_) => ServerLine::Hello(Welcome {
+                                    api_version: proto::API_VERSION,
+                                    server: "t".into(),
+                                    client: "nyx-glimpse".into(),
+                                }),
                                 ClientLine::Request(r) => ServerLine::Result {
                                     id: r.id,
                                     result: match r.op {
-                                        Op::ListModels {} => Reply::Models { models: vec![model("embeddinggemma-2-Q8_0", "/g/Models/embeddinggemma-2-Q8_0.gguf")] },
+                                        Op::ListModels {} => Reply::Models {
+                                            models: vec![model("embeddinggemma-2-Q8_0", "/g/Models/embeddinggemma-2-Q8_0.gguf")],
+                                        },
                                         Op::Embed { input, .. } => {
                                             let mut unit = vec![0.0; DIMENSIONS];
                                             unit[0] = 1.0;
-                                            Reply::Embeddings(Embeddings { identity: identity.clone(), dimensions: DIMENSIONS, vectors: vec![unit; input.len()] })
+                                            Reply::Embeddings(Embeddings {
+                                                identity: identity.clone(),
+                                                dimensions: DIMENSIONS,
+                                                vectors: vec![unit; input.len()],
+                                            })
                                         }
                                         _ => Reply::Ok,
                                     },
@@ -554,5 +575,4 @@ pub(crate) mod fake {
         ready_rx.recv().unwrap();
         path
     }
-
 }

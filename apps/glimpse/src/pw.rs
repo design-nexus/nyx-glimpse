@@ -2,8 +2,8 @@
 //! while the daemon works and comes back with an error.
 
 use gtk::{glib, prelude::*};
-pub use nyx_glimpse::vault::*;
 use nyx_glimpse::passwords::Verb;
+pub use nyx_glimpse::vault::*;
 
 /// Acts on a row: `verb` overrides the row's own (Ctrl+Enter, Alt+Enter, Ctrl+O, Ctrl+C).
 /// The window hides once the daemon has done it; errors stay in the status bar. Something

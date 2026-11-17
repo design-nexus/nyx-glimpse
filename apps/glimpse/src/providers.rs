@@ -397,10 +397,17 @@ mod shared_tests {
 
     #[test]
     fn only_actions_without_arguments_run_from_a_result() {
-        assert!(runnable(&action("theater.now_playing", "io.github.design_nexus.nyx.Theater", serde_json::json!({"type": "object"}))));
+        assert!(runnable(&action(
+            "theater.now_playing",
+            "io.github.design_nexus.nyx.Theater",
+            serde_json::json!({"type": "object"})
+        )));
         assert!(!runnable(&action("theater.play", "x", serde_json::json!({"type": "object", "required": ["id"]}))));
         assert!(!runnable(&action("glimpse.search", "nyx-glimpse", serde_json::json!({"type": "object"}))));
-        assert_eq!(action_title("What Theater is playing: title, position. More.", "t.n"), "What Theater is playing: title, position");
+        assert_eq!(
+            action_title("What Theater is playing: title, position. More.", "t.n"),
+            "What Theater is playing: title, position"
+        );
         assert_eq!(summary(&serde_json::json!({"text": "Paused at\n12:04"})), "Paused at 12:04");
         assert_eq!(summary(&serde_json::Value::Null), "");
     }

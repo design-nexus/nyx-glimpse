@@ -155,7 +155,9 @@ pub fn atomic_write(p: &Path, bytes: &[u8]) -> Result<()> {
 }
 /// A D-Bus style app ID: `io.github.design_nexus.nyx.Music`.
 fn app_id(id: &str) -> bool {
-    id.len() <= 255 && id.contains('.') && id.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+    id.len() <= 255
+        && id.contains('.')
+        && id.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
 }
 pub fn validate(c: &Config) -> Result<()> {
     let mut used = Vec::new();
@@ -169,22 +171,30 @@ pub fn validate(c: &Config) -> Result<()> {
         used.push(parsed);
     }
     if c.alias_queries.len() > 1000
-        || c.alias_queries
-            .iter()
-            .any(|(id, q)| !crate::learning::eligible_id(id) || q.len() > 256 || crate::passwords::parse(q).is_some() || crate::clipboard::parse(q).is_some())
+        || c.alias_queries.iter().any(|(id, q)| {
+            !crate::learning::eligible_id(id)
+                || q.len() > 256
+                || crate::passwords::parse(q).is_some()
+                || crate::clipboard::parse(q).is_some()
+        })
     {
         bail!("Invalid alias queries");
     }
     if c.favorites.len() > 1000
         || c.aliases.len() > 1000
-        || c.aliases.values().any(|a| a.trim().is_empty() || a.len() > 128 || crate::passwords::parse(a).is_some() || crate::clipboard::parse(a).is_some())
+        || c.aliases.values().any(|a| {
+            a.trim().is_empty() || a.len() > 128 || crate::passwords::parse(a).is_some() || crate::clipboard::parse(a).is_some()
+        })
         || c.aliases.keys().chain(c.favorites.iter()).any(|id| !crate::learning::eligible_id(id))
     {
         bail!("Invalid favorites or aliases");
     }
     if c.pinned.len() > MAX_PINNED
         || c.pinned.iter().any(|p| {
-            !app_id(&p.app) || p.at.is_some_and(|a| a.iter().any(|v| v.abs() > 20_000)) || p.monitor.len() > 64 || !p.monitor.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            !app_id(&p.app)
+                || p.at.is_some_and(|a| a.iter().any(|v| v.abs() > 20_000))
+                || p.monitor.len() > 64
+                || !p.monitor.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         })
     {
         bail!("Invalid pinned panels");
@@ -354,7 +364,9 @@ mod tests {
         assert!(validate(&c).is_err(), "a monitor is a connector name");
         c.pinned[0] = Pinned { app: "../../evil".into(), monitor: String::new(), at: None };
         assert!(validate(&c).is_err(), "an app is an app ID");
-        c.pinned = (0..=MAX_PINNED).map(|i| Pinned { app: format!("io.github.design_nexus.nyx.App{i}"), monitor: String::new(), at: None }).collect();
+        c.pinned = (0..=MAX_PINNED)
+            .map(|i| Pinned { app: format!("io.github.design_nexus.nyx.App{i}"), monitor: String::new(), at: None })
+            .collect();
         assert!(validate(&c).is_err(), "at most six");
     }
 }

@@ -1,0 +1,1 @@
+/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/text-tools: /home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/src/main.rs /home/ken/Projects/nyx-glimpse/crates/glimpse-plugin-sdk/src/lib.rs

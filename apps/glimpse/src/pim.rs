@@ -31,8 +31,18 @@ struct Library {
 
 const LIBRARIES: [Library; 3] = [
     Library { plugin: "nyx-mail", file: "nyx-mail/mail.sqlite", mount: "/mail-library/mail.sqlite", env: "NYX_MAIL_DB" },
-    Library { plugin: "nyx-calendar", file: "nyx-calendar/agenda.sqlite", mount: "/calendar-library/agenda.sqlite", env: "NYX_CALENDAR_DB" },
-    Library { plugin: "nyx-reminders", file: "nyx-reminders/tasks.sqlite", mount: "/reminders-library/tasks.sqlite", env: "NYX_REMINDERS_DB" },
+    Library {
+        plugin: "nyx-calendar",
+        file: "nyx-calendar/agenda.sqlite",
+        mount: "/calendar-library/agenda.sqlite",
+        env: "NYX_CALENDAR_DB",
+    },
+    Library {
+        plugin: "nyx-reminders",
+        file: "nyx-reminders/tasks.sqlite",
+        mount: "/reminders-library/tasks.sqlite",
+        env: "NYX_REMINDERS_DB",
+    },
 ];
 
 /// Mounts the plugin's database (and Mail's write-ahead log beside it)
@@ -62,8 +72,7 @@ pub enum Launch {
 
 fn day(text: &str) -> bool {
     let b = text.as_bytes();
-    b.len() == 10
-        && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+    b.len() == 10 && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
 }
 
 fn list_uid(text: &str) -> bool {
@@ -141,7 +150,10 @@ pub fn host_action(paths: &Paths, plugin_id: &str, token: &str) -> Option<Result
     let launch = parse(plugin_id, token)?;
     Some((|| {
         let plugin = plugins::get(paths, plugin_id)?;
-        if !plugin.grant.enabled || plugin.grant.version != plugin.manifest.version || plugin.grant.requested != plugin.manifest.permissions {
+        if !plugin.grant.enabled
+            || plugin.grant.version != plugin.manifest.version
+            || plugin.grant.requested != plugin.manifest.permissions
+        {
             bail!("this plugin was turned off or its permissions changed");
         }
         match launch? {
@@ -191,8 +203,13 @@ mod tests {
 
     #[test]
     fn only_meeting_links_open() {
-        let join = |url: &str| launch("nyx-calendar", &serde_json::json!({"api_version":1,"app":"calendar","op":"join","url":url}).to_string());
-        assert_eq!(join("https://meet.google.com/abc-defg-hij").unwrap(), Launch::Link("https://meet.google.com/abc-defg-hij".into()));
+        let join = |url: &str| {
+            launch("nyx-calendar", &serde_json::json!({"api_version":1,"app":"calendar","op":"join","url":url}).to_string())
+        };
+        assert_eq!(
+            join("https://meet.google.com/abc-defg-hij").unwrap(),
+            Launch::Link("https://meet.google.com/abc-defg-hij".into())
+        );
         assert!(join("https://acme.zoom.us/j/123").is_ok());
         assert!(join("http://meet.google.com/abc").is_err());
         assert!(join("https://evil.example/meet.google.com/").is_err());

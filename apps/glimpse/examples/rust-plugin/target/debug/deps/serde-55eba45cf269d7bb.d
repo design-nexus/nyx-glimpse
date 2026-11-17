@@ -1,0 +1,14 @@
+/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/deps/serde-55eba45cf269d7bb.d: /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/build/serde-245d9e0af5048ed2/out/private.rs
+
+/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/deps/libserde-55eba45cf269d7bb.rlib: /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/build/serde-245d9e0af5048ed2/out/private.rs
+
+/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/deps/libserde-55eba45cf269d7bb.rmeta: /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/build/serde-245d9e0af5048ed2/out/private.rs
+
+/home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/home/ken/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/build/serde-245d9e0af5048ed2/out/private.rs:
+
+# env-dep:OUT_DIR=/home/ken/Projects/nyx-glimpse/apps/glimpse/examples/rust-plugin/target/debug/build/serde-245d9e0af5048ed2/out

@@ -259,9 +259,11 @@ impl Session {
                 let minimum = *top - 0.05;
                 semantic.retain(|(lift, _)| *lift >= minimum);
             }
-            for (rank, (_, mut hit)) in semantic.into_iter().take(5).enumerate() {
+            // A hit without a path (a model's or plugin's answer) can't be fused by file.
+            let with_path = semantic.into_iter().filter_map(|(_, hit)| Some((hit["path"].as_str()?.to_string(), hit)));
+            for (rank, (path, mut hit)) in with_path.take(5).enumerate() {
                 hit["related"] = true.into();
-                fused.insert(hit["path"].as_str().unwrap().into(), (1. / (60. + rank as f64), hit));
+                fused.insert(path, (1. / (60. + rank as f64), hit));
             }
         }
         // Words in a file's contents count only when they appear together, as typed, not
@@ -888,7 +890,8 @@ fn index_with(p: &Paths, mut core: Core) -> Result<bool> {
     if p.state.join("extract").exists() {
         fs::remove_dir_all(p.state.join("extract"))?;
     }
-    let partial: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE status IN ('partial','retry'))", [], |r| r.get(0))?;
+    let partial: bool =
+        db.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE status IN ('partial','retry'))", [], |r| r.get(0))?;
     if rebuilding && finished && !partial {
         finish_rebuild(p, db)?;
         return Ok(false);

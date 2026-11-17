@@ -125,7 +125,9 @@ impl Row {
                 list
             }
             Item::Provider(Target::App(_)) => match &self.panel {
-                Some(o) if o.reason.is_none() => vec![(enter, "Open"), (&["Tab"][..], "Use the panel"), (&["Ctrl", "P"][..], "Pin")],
+                Some(o) if o.reason.is_none() => {
+                    vec![(enter, "Open"), (&["Tab"][..], "Use the panel"), (&["Ctrl", "P"][..], "Pin")]
+                }
                 _ => vec![(enter, "Open")],
             },
             Item::Copy(_) => vec![(enter, "Copy")],
@@ -226,7 +228,16 @@ fn command_row(c: AppCommand) -> Row {
 
 fn panel_row(o: PanelOffer) -> Row {
     let subtitle = o.reason.clone().unwrap_or_else(|| format!("{} at a glance", o.app));
-    Row { id: format!("panel:{}", o.app_id), title: o.app.clone(), subtitle, reason: String::new(), kind: "panel", icon: o.icon.clone(), panel: None, item: Item::Panel(o) }
+    Row {
+        id: format!("panel:{}", o.app_id),
+        title: o.app.clone(),
+        subtitle,
+        reason: String::new(),
+        kind: "panel",
+        icon: o.icon.clone(),
+        panel: None,
+        item: Item::Panel(o),
+    }
 }
 
 /// An app's panel goes on the app's own row, which takes the panel's place (first); a
@@ -238,7 +249,9 @@ fn fold_panels(rows: &mut Vec<Row>) {
             i += 1;
             continue;
         };
-        let app = rows.iter().position(|r| matches!(&r.item, Item::Provider(Target::App(id)) if id.strip_suffix(".desktop").unwrap_or(id) == o.app_id));
+        let app = rows.iter().position(
+            |r| matches!(&r.item, Item::Provider(Target::App(id)) if id.strip_suffix(".desktop").unwrap_or(id) == o.app_id),
+        );
         let Some(at) = app else {
             i += 1;
             continue;
@@ -384,7 +397,11 @@ pub fn applications() -> Vec<(String, String, String)> {
             let keywords = gio_unix::DesktopAppInfo::new(&id)
                 .map(|d| d.keywords().iter().map(|k| k.to_string()).collect::<Vec<_>>().join(" "))
                 .unwrap_or_default();
-            Some((id, a.display_name().to_string(), format!("{} {} {keywords}", a.name(), a.description().unwrap_or_default()).to_lowercase()))
+            Some((
+                id,
+                a.display_name().to_string(),
+                format!("{} {} {keywords}", a.name(), a.description().unwrap_or_default()).to_lowercase(),
+            ))
         })
         .collect()
 }
@@ -665,7 +682,8 @@ pub fn activate(p: &Paths, row: &Row, confirmed: bool, reveal: bool) -> Result<D
             Ok(Done::Closed)
         }
         Item::Provider(Target::Omarchy(id)) => {
-            let providers::Effect::Command(argv, confirm) = providers::resolve(p, &Target::Omarchy(id.clone()), "execute")? else {
+            let providers::Effect::Command(argv, confirm) = providers::resolve(p, &Target::Omarchy(id.clone()), "execute")?
+            else {
                 bail!("Unsupported command");
             };
             if confirm && !confirmed {
@@ -863,7 +881,9 @@ fn panel_actions(p: &Paths, row: &Row) -> Vec<(String, String)> {
             }
         }
         Item::Provider(Target::Service(_)) => items[0].0 = "View status".into(),
-        Item::System(_) | Item::Provider(Target::Omarchy(_) | Target::Shared(_) | Target::System(_)) => items[0].0 = "Execute".into(),
+        Item::System(_) | Item::Provider(Target::Omarchy(_) | Target::Shared(_) | Target::System(_)) => {
+            items[0].0 = "Execute".into()
+        }
         Item::Copy(_) => items[0].0 = "Copy".into(),
         _ => {}
     }
@@ -890,11 +910,12 @@ fn preview_json(row: &Row, query: &str, images: &Path) -> Value {
                 .map(|c| c.to_string_lossy().split_whitespace().filter(|w| !w.starts_with('%')).collect::<Vec<_>>().join(" "))
                 .unwrap_or_default();
             let facts = preview::app_facts(id);
-            let info: Vec<Value> = [("Command", command.as_str()), ("Source", facts.source), ("Keywords", facts.keywords.as_str())]
-                .into_iter()
-                .filter(|(_, v)| !v.is_empty())
-                .map(|(k, v)| json!([k, v]))
-                .collect();
+            let info: Vec<Value> =
+                [("Command", command.as_str()), ("Source", facts.source), ("Keywords", facts.keywords.as_str())]
+                    .into_iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| json!([k, v]))
+                    .collect();
             let kind = if facts.kind.is_empty() { "Application".to_string() } else { facts.kind };
             json!({"body": {"type": "app", "icon": row.icon, "name": row.title, "kind": kind, "desc": description, "chips": facts.categories, "info": info}, "details": []})
         }
@@ -912,7 +933,9 @@ fn preview_json(row: &Row, query: &str, images: &Path) -> Value {
         }
         Item::Command(c) => command_preview(c),
         Item::Panel(o) => json!({"body": card(&o.icon, &o.app, o.reason.as_deref().unwrap_or("")), "details": []}),
-        Item::Ask(text) => json!({"body": card(&row.icon, "Ask Nyx Assistant", &format!("Enter sends “{text}” to Nyx Assistant. Glimpse's commands work without it.")), "details": []}),
+        Item::Ask(text) => {
+            json!({"body": card(&row.icon, "Ask Nyx Assistant", &format!("Enter sends “{text}” to Nyx Assistant. Glimpse's commands work without it.")), "details": []})
+        }
         Item::Provider(_) => json!({"body": card(&row.icon, &row.title, &row.subtitle), "details": []}),
     }
 }
@@ -1212,7 +1235,11 @@ impl Shared {
                     }
                 }
                 None if full => return Err(anyhow!("{} panels are pinned already", config::MAX_PINNED)),
-                None => c.pinned.push(config::Pinned { app: app.to_string(), monitor: monitor.unwrap_or_default().to_string(), at: at.flatten() }),
+                None => c.pinned.push(config::Pinned {
+                    app: app.to_string(),
+                    monitor: monitor.unwrap_or_default().to_string(),
+                    at: at.flatten(),
+                }),
             }
         } else {
             c.pinned.retain(|p| p.app != app);
@@ -1290,7 +1317,9 @@ fn run(shared: &Arc<Shared>, row: &Row, query: &str, how: &str, confirmed: bool)
             shared.commands.open_app(&o.app_id, serde_json::Map::new())?;
             Ok(Done::Closed)
         }
-        Item::Provider(Target::App(_)) if how == "panel" && row.panel.as_ref().is_some_and(|o| o.reason.is_none()) => Ok(Done::FocusPanel),
+        Item::Provider(Target::App(_)) if how == "panel" && row.panel.as_ref().is_some_and(|o| o.reason.is_none()) => {
+            Ok(Done::FocusPanel)
+        }
         Item::Provider(Target::Shared(id)) if how == "enter" => {
             let c = shared.commands.plain(id).ok_or_else(|| anyhow!("That action isn't offered any more"))?;
             run_command(shared, &c, confirmed, &row.id)
@@ -1521,8 +1550,10 @@ pub fn serve(p: Paths) -> Result<()> {
                     let Some((row, _)) = shared.row(generation, &id) else {
                         return req.err("stale", "That result is gone; search again");
                     };
-                    let items: Vec<Value> =
-                        panel_actions(&shared.paths, &row).into_iter().map(|(title, verb)| json!({"title": title, "verb": verb})).collect();
+                    let items: Vec<Value> = panel_actions(&shared.paths, &row)
+                        .into_iter()
+                        .map(|(title, verb)| json!({"title": title, "verb": verb}))
+                        .collect();
                     let alias = shared.paths.load().ok().and_then(|c| c.aliases.get(&row.id).cloned()).unwrap_or_default();
                     let details = if matches!(row.item, Item::Password(_) | Item::Clipboard(_)) {
                         format!("{}\n{}", row.title, row.subtitle)
@@ -1776,7 +1807,16 @@ pub fn serve(p: Paths) -> Result<()> {
                 }
                 let (more, slow_status) = engine.slow(&q, &cancelled).unwrap_or_else(|e| (vec![], e.to_string()));
                 merge(&mut found, more);
-                publish_results(&shared, &link, &p, g, &q, &found, if slow_status.is_empty() { &status } else { &slow_status }, true);
+                publish_results(
+                    &shared,
+                    &link,
+                    &p,
+                    g,
+                    &q,
+                    &found,
+                    if slow_status.is_empty() { &status } else { &slow_status },
+                    true,
+                );
             }
         });
     }
@@ -1812,7 +1852,16 @@ pub fn serve(p: Paths) -> Result<()> {
 /// Sends the rows for generation `g`, sorted into their categories, unless a newer search
 /// has started since.
 #[allow(clippy::too_many_arguments)]
-fn publish_results(shared: &Shared, link: &nyx_ui_link::Link, p: &Paths, g: u64, q: &str, found: &[Row], status: &str, complete: bool) {
+fn publish_results(
+    shared: &Shared,
+    link: &nyx_ui_link::Link,
+    p: &Paths,
+    g: u64,
+    q: &str,
+    found: &[Row],
+    status: &str,
+    complete: bool,
+) {
     if shared.generation.load(Ordering::SeqCst) != g {
         return;
     }
@@ -1836,7 +1885,10 @@ fn watch_settings(shared: Arc<Shared>) {
         let (tx, rx) = mpsc::channel();
         let Ok(mut watcher) = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if let Ok(event) = event
-                && matches!(event.kind, notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_))
+                && matches!(
+                    event.kind,
+                    notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
+                )
                 && event.paths.iter().any(|path| {
                     path.file_name().is_some_and(|name| {
                         ["settings.toml", "plugins.json", "plugin-catalog.json", "catalog-status.txt"].iter().any(|s| name == *s)
@@ -1941,7 +1993,13 @@ mod tests {
     #[test]
     fn only_glimpse_s_own_programs_connect() {
         let peer = |exe: Option<&str>| nyx_ui_link::Peer { id: 1, pid: 1, uid: 1000, exe: exe.map(PathBuf::from) };
-        for ok in ["/usr/bin/qs", "/usr/bin/quickshell", "/nix/store/x-quickshell/bin/.quickshell-wrapped", "/home/u/.local/bin/nyx-glimpse", "/nix/store/y/bin/.nyx-glimpse-wrapped"] {
+        for ok in [
+            "/usr/bin/qs",
+            "/usr/bin/quickshell",
+            "/nix/store/x-quickshell/bin/.quickshell-wrapped",
+            "/home/u/.local/bin/nyx-glimpse",
+            "/nix/store/y/bin/.nyx-glimpse-wrapped",
+        ] {
             assert!(glimpse_peer(&peer(Some(ok))), "{ok}");
         }
         for refused in ["/usr/bin/python3", "/usr/bin/socat", "/tmp/nyx-glimpse-evil"] {
@@ -2050,7 +2108,11 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
-            [&format!("app:{weather}.desktop"), "panel:io.github.design_nexus.nyx.Settings", "app:io.github.design_nexus.nyx.Calendar.desktop"]
+            [
+                &format!("app:{weather}.desktop"),
+                "panel:io.github.design_nexus.nyx.Settings",
+                "app:io.github.design_nexus.nyx.Calendar.desktop"
+            ]
         );
         let json = rows[0].json(&[]);
         assert_eq!((json["kind"].as_str(), json["panel"]["id"].as_str()), (Some("app"), Some("weather")));

@@ -10,7 +10,13 @@ const IFACE: &str = "io.github.design_nexus.nyx.Clipboard1";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cb {
-    Entry { id: i64, kind: String, pinned: bool, size: u64, app: String },
+    Entry {
+        id: i64,
+        kind: String,
+        pinned: bool,
+        size: u64,
+        app: String,
+    },
     /// Clipboard isn't installed or its service isn't answering.
     Unavailable,
     /// Guidance in place of results; Enter does nothing.
@@ -107,10 +113,12 @@ fn human(b: u64) -> String {
 
 async fn call(method: &str, args: Option<glib::Variant>) -> Result<glib::Variant, String> {
     let bus = gio::bus_get_future(gio::BusType::Session).await.map_err(|e| e.to_string())?;
-    bus.call_future(Some(BUS), PATH, IFACE, method, args.as_ref(), None, gio::DBusCallFlags::NONE, 10_000).await.map_err(|mut e| {
-        gio::DBusError::strip_remote_error(&mut e);
-        e.message().to_string()
-    })
+    bus.call_future(Some(BUS), PATH, IFACE, method, args.as_ref(), None, gio::DBusCallFlags::NONE, 10_000).await.map_err(
+        |mut e| {
+            gio::DBusError::strip_remote_error(&mut e);
+            e.message().to_string()
+        },
+    )
 }
 
 /// One row: title, second line, what it is.
@@ -159,9 +167,15 @@ pub async fn lookup(text: &str) -> (Vec<Row>, String) {
         .collect();
     if rows.is_empty() {
         let help = if text.is_empty() {
-            ("Nothing copied yet".to_string(), "cb finds what you copied · cb img: · cb url: · Super + Ctrl + V opens Clipboard".to_string())
+            (
+                "Nothing copied yet".to_string(),
+                "cb finds what you copied · cb img: · cb url: · Super + Ctrl + V opens Clipboard".to_string(),
+            )
         } else {
-            (format!("Nothing copied matches “{text}”"), "Try fewer or other words, or a kind: cb img: · cb url: · cb code:".to_string())
+            (
+                format!("Nothing copied matches “{text}”"),
+                "Try fewer or other words, or a kind: cb img: · cb url: · cb code:".to_string(),
+            )
         };
         rows.push((help.0, help.1, Cb::Help));
     }
@@ -176,7 +190,9 @@ pub fn hides_first(how: How) -> bool {
 /// Acts on an entry in the service; what to say about it when the panel stays (Pin, Delete).
 pub async fn perform(id: i64, pinned: bool, how: How) -> Result<&'static str, String> {
     match how {
-        How::Paste | How::PastePlain => call("Paste", Some((vec![id], how == How::PastePlain).to_variant())).await.map(|_| "Pasted"),
+        How::Paste | How::PastePlain => {
+            call("Paste", Some((vec![id], how == How::PastePlain).to_variant())).await.map(|_| "Pasted")
+        }
         How::Copy => call("Copy", Some((id, false).to_variant())).await.map(|_| "Copied"),
         How::Pin => call("SetPinned", Some((id, !pinned).to_variant())).await.map(|_| if pinned { "Unpinned" } else { "Pinned" }),
         How::Delete => call("Delete", Some((vec![id],).to_variant())).await.map(|_| "Deleted"),

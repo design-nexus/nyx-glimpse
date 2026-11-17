@@ -228,7 +228,8 @@ pub enum Kind {
 }
 
 /// Every kind this Settings can draw, passed to helpers as `SETTINGS_KINDS`.
-pub const KINDS: &str = "info switch slider choice segmented buttons entry button colour chips curve disclosure camera meter preview icon";
+pub const KINDS: &str =
+    "info switch slider choice segmented buttons entry button colour chips curve disclosure camera meter preview icon";
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ThemeSwatch {

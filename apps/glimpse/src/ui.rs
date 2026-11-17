@@ -4,12 +4,13 @@ use crate::pw;
 use gtk::{gdk, gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nyx_glimpse::preview::{
-    self, AppFacts, Body, Flavor, Preview, app_facts, app_keywords, content_type, folder_of, match_reason, media_kind,
-    open_file, system_description,
+    self, AppFacts, Body, Flavor, Preview, app_facts, app_keywords, content_type, folder_of, match_reason, media_kind, open_file,
+    system_description,
 };
 use nyx_glimpse::{
+    clipboard,
     config::{self, Paths},
-    clipboard, index, learning, metrics, omarchy, passwords, plugins, providers, query, semantic, utility,
+    index, learning, metrics, omarchy, passwords, plugins, providers, query, semantic, utility,
 };
 use serde_json::{Value, json};
 use std::{
@@ -1598,7 +1599,9 @@ fn calculator_preview(entry: &gtk::SearchEntry) -> (gtk::Box, gtk::Label) {
 fn make_preview(result: &ResultRow, query: &str) -> Preview {
     match &result.action {
         Action::File(path, hit) => preview::file_preview(path, hit, query, Flavor::Pango, crate::player::available()),
-        Action::Plugin(id, result_id, _) => preview::plugin_preview(id, result_id, &result.title, &result.folder, query, Flavor::Pango),
+        Action::Plugin(id, result_id, _) => {
+            preview::plugin_preview(id, result_id, &result.title, &result.folder, query, Flavor::Pango)
+        }
         _ => Preview { body: Body::Icon, details: vec![] },
     }
 }
@@ -2720,13 +2723,17 @@ impl ActionPanel {
                 if let cb::Cb::Entry { kind, pinned, .. } = c {
                     items.push(PanelItem { title: "Paste".into(), verb: PanelVerb::Clipboard(cb::How::Paste) });
                     if kind != "image" {
-                        items.push(PanelItem { title: "Paste as plain text".into(), verb: PanelVerb::Clipboard(cb::How::PastePlain) });
+                        items.push(PanelItem {
+                            title: "Paste as plain text".into(),
+                            verb: PanelVerb::Clipboard(cb::How::PastePlain),
+                        });
                     }
                     items.push(PanelItem { title: "Copy".into(), verb: PanelVerb::Clipboard(cb::How::Copy) });
                     let pin = if *pinned { "Unpin" } else { "Pin" };
                     items.push(PanelItem { title: pin.into(), verb: PanelVerb::Clipboard(cb::How::Pin) });
                     items.push(PanelItem { title: "Delete".into(), verb: PanelVerb::Clipboard(cb::How::Delete) });
-                    items.push(PanelItem { title: "More actions in Clipboard".into(), verb: PanelVerb::Clipboard(cb::How::Open) });
+                    items
+                        .push(PanelItem { title: "More actions in Clipboard".into(), verb: PanelVerb::Clipboard(cb::How::Open) });
                 }
             }
             Action::Command(providers::Target::Service(_)) => {

@@ -280,7 +280,8 @@ impl Commands {
             texts.push((typed, true));
         }
         // A namespace alone lists verbs; an action's other words come once one is typed.
-        let verbs: Vec<String> = entry.actions.iter().map(|l| l.action.verb().split('.').next().unwrap_or_default().to_string()).collect();
+        let verbs: Vec<String> =
+            entry.actions.iter().map(|l| l.action.verb().split('.').next().unwrap_or_default().to_string()).collect();
         let mut candidates = resolve::complete(catalog, &done, &partial);
         if suggest && done.len() > 1 {
             candidates.extend(self.runtime.block_on(self.registry.suggest(catalog, &done, &partial)));
@@ -335,7 +336,8 @@ impl Commands {
 
 /// The mini-app panels Glimpse ships (`quickshell/Glimpse/panels/<id>/Panel.qml`). An
 /// app's manifest can only pick one of these; nothing else runs in the shell.
-pub const PANELS: &[&str] = &["music", "lyra", "home", "files", "calendar", "reminders", "notes", "weather", "containers", "devices", "git"];
+pub const PANELS: &[&str] =
+    &["music", "lyra", "home", "files", "calendar", "reminders", "notes", "weather", "containers", "devices", "git"];
 
 /// An app's panel, offered for a query that starts with the app's name.
 #[derive(Clone, Debug, PartialEq)]
@@ -407,12 +409,17 @@ impl Commands {
     }
 
     /// An action a panel runs: only its own app's, checked as any other call.
-    pub fn run_for_panel(&self, app_id: &str, action: &str, arguments: Map<String, Value>, confirmed: bool) -> Result<(Command, Value), nyx_actions::Error> {
+    pub fn run_for_panel(
+        &self,
+        app_id: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+        confirmed: bool,
+    ) -> Result<(Command, Value), nyx_actions::Error> {
         let catalog = self.catalog(false);
-        let (entry, listed) = catalog
-            .find(action)
-            .filter(|(e, _)| e.app.app == app_id)
-            .ok_or_else(|| nyx_actions::Error::new(nyx_actions::ErrorKind::PermissionDenied, format!("{action} isn't this panel's app's")))?;
+        let (entry, listed) = catalog.find(action).filter(|(e, _)| e.app.app == app_id).ok_or_else(|| {
+            nyx_actions::Error::new(nyx_actions::ErrorKind::PermissionDenied, format!("{action} isn't this panel's app's"))
+        })?;
         let c = Command::new(entry, listed, arguments, String::new(), true);
         let value = self.invoke(&c, confirmed)?;
         Ok((c, value))
@@ -421,7 +428,8 @@ impl Commands {
     /// The app's own window, at `arguments` when it has an open action (`nyx.open`).
     pub fn open_app(&self, app_id: &str, arguments: Map<String, Value>) -> anyhow::Result<()> {
         let catalog = self.catalog(false);
-        let entry = catalog.apps.iter().find(|e| e.app.app == app_id).ok_or_else(|| anyhow::anyhow!("{app_id} isn't installed"))?;
+        let entry =
+            catalog.apps.iter().find(|e| e.app.app == app_id).ok_or_else(|| anyhow::anyhow!("{app_id} isn't installed"))?;
         if let Some(open) = &entry.app.open
             && let Some((e, l)) = catalog.find(&open.action)
         {
@@ -429,7 +437,8 @@ impl Commands {
             return self.invoke(&c, true).map(|_| ()).map_err(|e| anyhow::anyhow!(e.message));
         }
         use gtk::prelude::AppInfoExt;
-        let info = gio_unix::DesktopAppInfo::new(&format!("{app_id}.desktop")).ok_or_else(|| anyhow::anyhow!("{} has no desktop entry", entry.app.name))?;
+        let info = gio_unix::DesktopAppInfo::new(&format!("{app_id}.desktop"))
+            .ok_or_else(|| anyhow::anyhow!("{} has no desktop entry", entry.app.name))?;
         info.launch(&[], None::<&gtk::gio::AppLaunchContext>)?;
         Ok(())
     }
@@ -633,7 +642,10 @@ mod tests {
         };
         let commands = Commands::new(Options { dirs: vec![], bus_address: None, live: false }).with_panels(&["music"]);
         let offer = commands.panel(&make("music"), "music  jazz piano").unwrap();
-        assert_eq!((offer.panel.as_str(), offer.query.as_str(), offer.topics.clone()), ("music", "jazz piano", vec!["playback".to_string()]));
+        assert_eq!(
+            (offer.panel.as_str(), offer.query.as_str(), offer.topics.clone()),
+            ("music", "jazz piano", vec!["playback".to_string()])
+        );
         assert_eq!(offer.size["preferred"], json!([520, 380]));
         assert!(offer.available);
         assert!(commands.panel(&make("music"), "mus").is_none(), "only the app's whole name");

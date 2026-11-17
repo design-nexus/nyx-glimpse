@@ -125,7 +125,57 @@ pub fn load(dir: &Path) -> Result<Manifest> {
     }
     Ok(m)
 }
+/// Plugins apps ship (`nyx-APP/glimpse`), in the user's data folder, the one Glimpse's
+/// own is in (Omarchy's installers), and each of `$XDG_DATA_DIRS` (NixOS's system
+/// profile, a person's Nix profile), first wins.
+pub fn app_plugin_dirs(p: &Paths) -> Vec<PathBuf> {
+    let home = p.data.parent().map(Path::to_path_buf);
+    let dirs =
+        std::env::var("XDG_DATA_DIRS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    app_plugin_dirs_in(home, &dirs)
+}
+
+fn app_plugin_dirs_in(home: Option<PathBuf>, dirs: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for share in home.into_iter().chain(dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from)) {
+        let Ok(apps) = fs::read_dir(&share) else { continue };
+        let mut found: Vec<PathBuf> = apps
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("nyx-"))
+            .map(|e| e.path().join("glimpse"))
+            .filter(|d| d.join("plugin.toml").is_file())
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
+}
+
+impl Plugin {
+    /// Shipped with its app rather than installed in Glimpse: turned off, not removed,
+    /// and updated with the app.
+    pub fn packaged(&self, p: &Paths) -> bool {
+        !self.dir.starts_with(p.data.join("plugins"))
+    }
+}
+
 pub fn list(p: &Paths) -> Result<Vec<Plugin>> {
+    let mut result = installed(p)?;
+    let reg = registry(p)?;
+    for dir in app_plugin_dirs(p) {
+        let Ok(manifest) = load(&dir) else { continue };
+        if result.iter().any(|x| x.manifest.id == manifest.id) {
+            continue;
+        }
+        let grant = reg.get(&manifest.id).cloned().unwrap_or_default();
+        result.push(Plugin { manifest, grant, dir });
+    }
+    result.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    Ok(result)
+}
+
+/// Plugins installed in Glimpse's own folder.
+fn installed(p: &Paths) -> Result<Vec<Plugin>> {
     let reg = registry(p)?;
     let base = p.data.join("plugins");
     if !base.exists() {
@@ -316,6 +366,9 @@ pub fn disable(p: &Paths, id: &str) -> Result<()> {
 }
 pub fn remove(p: &Paths, id: &str, purge: bool) -> Result<()> {
     let plugin = get(p, id)?;
+    if plugin.packaged(p) {
+        bail!("{} comes with its app; turn it off instead", plugin.manifest.name);
+    }
     disable(p, id)?;
     if plugin.dir.symlink_metadata()?.file_type().is_symlink() {
         fs::remove_file(plugin.dir)?;
@@ -803,6 +856,9 @@ pub fn catalog(p: &Paths, refresh: bool) -> Result<Vec<CatalogEntry>> {
 }
 pub fn update(p: &Paths, id: &str) -> Result<String> {
     let plugin = get(p, id)?;
+    if plugin.packaged(p) {
+        bail!("{} is updated with its app", plugin.manifest.name);
+    }
     if plugin.grant.source == "builtin:quick-tools" {
         return install_builtin_mode(p, true);
     }
@@ -1047,4 +1103,26 @@ pub fn search_one(p: &Paths, id: &str, q: &str, cancelled: &dyn Fn() -> bool) ->
         .take(10)
         .filter(|hit| hit.title.len() <= 512 && hit.subtitle.len() <= 2048 && valid_action(p, &plugin, &hit.action))
         .collect()
+}
+
+#[cfg(test)]
+mod app_plugins {
+    use super::*;
+
+    #[test]
+    fn apps_plugins_are_found_in_data_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = |share: &str, app: &str| {
+            let d = root.path().join(share).join(app).join("glimpse");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("plugin.toml"), "").unwrap();
+            d
+        };
+        let mine = plugin("home", "nyx-mail");
+        let system = plugin("system", "nyx-calendar");
+        plugin("system", "other-app");
+        fs::create_dir_all(root.path().join("system/nyx-empty/glimpse")).unwrap();
+        let dirs = format!("{}:{}", root.path().join("system").display(), root.path().join("missing").display());
+        assert_eq!(app_plugin_dirs_in(Some(root.path().join("home")), &dirs), vec![mine, system]);
+    }
 }

@@ -448,9 +448,8 @@ fn invalid_vectors_and_shortcut_injection_are_rejected() {
 #[test]
 fn settings_edits_persist_and_reject_invalid_values() {
     let (_t, p, _) = fixture();
-    let set = |key: &str, value: &str| {
-        nyx_glimpse::settings::dispatch(&p, &["set".into(), "glimpse".into(), key.into(), value.into()])
-    };
+    let set =
+        |key: &str, value: &str| nyx_glimpse::settings::dispatch(&p, &["set".into(), "glimpse".into(), key.into(), value.into()]);
     set("search_key", "SUPER + S").unwrap();
     set("menu_key", "SUPER + M").unwrap();
     set("device", "cpu").unwrap();
