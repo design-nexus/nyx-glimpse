@@ -6,6 +6,8 @@ Glimpse follows the suite theme. Sources start empty and models download only wh
 
 ## Install
 
+On NyxOS, Glimpse comes with the system. On Omarchy:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-glimpse/main/install.sh | bash
 ```
